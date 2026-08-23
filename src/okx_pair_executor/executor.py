@@ -137,6 +137,7 @@ class PairExecutor:
     async def _debounced_reprice(self, child_id: str) -> None:
         child = next((child for parent in self.parents.values() for child in parent.children
                       if child.child_id == child_id), None)
+        was_cancelled = False
         try:
             if child is None:
                 return
@@ -151,10 +152,12 @@ class PairExecutor:
             target = bbo[0] if buy else bbo[1]
             if target != child.maker_price:
                 await self.reprice_child(child_id)
+        except asyncio.CancelledError:
+            was_cancelled = True
+            raise
         finally:
             self._reprice_tasks.pop(child_id, None)
-            current = asyncio.current_task()
-            if current is not None and current.cancelling():
+            if was_cancelled:
                 return
             if child is not None and child.state is ChildState.MAKER_WORKING and child.perp_order_id:
                 parent = self.parents_for_child(child)
