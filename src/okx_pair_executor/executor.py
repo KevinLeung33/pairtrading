@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from decimal import Decimal
 from typing import Any
 
@@ -18,6 +19,13 @@ from .models import (
     report_payload,
 )
 from .persistence import JsonStateStore
+
+
+def compact_client_id(value: str) -> str:
+    result = re.sub(r'[^A-Za-z0-9]', '', value)
+    if not result:
+        raise ValueError('client order id must contain an alphanumeric character')
+    return result[:32]
 
 
 class PairExecutor:
@@ -90,7 +98,7 @@ class PairExecutor:
 
     async def _place_maker(self, parent: ParentOrder, child: ChildOrder, rules: InstrumentRules) -> None:
         buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
-        cl_ord_id = f"{child.child_id}-M"
+        cl_ord_id = compact_client_id(f"{child.child_id}M")
         request = OrderRequest(
             inst_id=parent.request.swap_inst_id,
             side="buy" if buy else "sell",
@@ -187,7 +195,7 @@ class PairExecutor:
                     ord_type="ioc",
                     size=qty,
                     price=None,
-                    cl_ord_id=f"{child.child_id}-H{child.hedge_attempts:03d}",
+                    cl_ord_id=compact_client_id(f"{child.child_id}H{child.hedge_attempts:03d}"),
                     slippage_bps=parent.request.max_spot_slippage_bps,
                 )
                 try:
