@@ -29,6 +29,7 @@ async def run(config: AppConfig, request_id: str) -> None:
 
     async def on_book(inst_id, best_bid, best_ask):
         client.update_orderbook(inst_id, best_bid=best_bid, best_ask=best_ask)
+        await executor.on_book(inst_id, best_bid, best_ask)
 
     book_stream = OkxBookStream([config.spot_inst_id, config.swap_inst_id], on_book, demo=config.demo)
     book_task = asyncio.create_task(book_stream.run(), name="okx-public-books")
@@ -54,6 +55,7 @@ async def run(config: AppConfig, request_id: str) -> None:
             parent.state = ParentOrderState.RECOVERY
             await executor.reconcile()
     finally:
+        await executor.stop_repricing()
         book_stream.stop()
         for task in (book_task, order_task):
             task.cancel()

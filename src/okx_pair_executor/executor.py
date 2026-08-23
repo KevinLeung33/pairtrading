@@ -39,6 +39,8 @@ class PairExecutor:
         self._children_by_order: dict[str, ChildOrder] = {}
         self._hedge_locks: dict[str, asyncio.Lock] = {}
         self._event_lock = asyncio.Lock()
+        self._latest_bbo: dict[str, tuple[Decimal, Decimal]] = {}
+        self._reprice_tasks: dict[str, asyncio.Task[None]] = {}
 
     def restore(self) -> dict[str, ParentOrder]:
         if not self.store:
@@ -111,8 +113,68 @@ class PairExecutor:
         child.perp_order_id = ack.ord_id
         child.perp_cl_ord_id = ack.cl_ord_id
         child.state = ChildState.MAKER_WORKING
+        child.maker_price = request.price or Decimal("0")
         self._children_by_order[ack.ord_id] = child
         self._persist()
+
+    async def on_book(self, inst_id: str, best_bid: Decimal, best_ask: Decimal) -> None:
+        self._latest_bbo[inst_id] = (best_bid, best_ask)
+        for parent in self.parents.values():
+            if parent.request.swap_inst_id != inst_id:
+                continue
+            buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
+            target = best_bid if buy else best_ask
+            for child in parent.children:
+                if child.state is not ChildState.MAKER_WORKING or not child.perp_order_id:
+                    continue
+                if child.maker_price == target or child.child_id in self._reprice_tasks:
+                    continue
+                self._reprice_tasks[child.child_id] = asyncio.create_task(
+                    self._debounced_reprice(child.child_id),
+                    name=f"reprice-{child.child_id}",
+                )
+
+    async def _debounced_reprice(self, child_id: str) -> None:
+        child = next((child for parent in self.parents.values() for child in parent.children
+                      if child.child_id == child_id), None)
+        try:
+            if child is None:
+                return
+            parent = self.parents_for_child(child)
+            await asyncio.sleep(max(parent.request.maker_reprice_interval_ms, 0) / 1000)
+            if child.state is not ChildState.MAKER_WORKING or not child.perp_order_id:
+                return
+            bbo = self._latest_bbo.get(parent.request.swap_inst_id)
+            if not bbo:
+                return
+            buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
+            target = bbo[0] if buy else bbo[1]
+            if target != child.maker_price:
+                await self.reprice_child(child_id)
+        finally:
+            self._reprice_tasks.pop(child_id, None)
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                return
+            if child is not None and child.state is ChildState.MAKER_WORKING and child.perp_order_id:
+                parent = self.parents_for_child(child)
+                bbo = self._latest_bbo.get(parent.request.swap_inst_id)
+                if bbo:
+                    buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
+                    target = bbo[0] if buy else bbo[1]
+                    if target != child.maker_price and child.child_id not in self._reprice_tasks:
+                        self._reprice_tasks[child.child_id] = asyncio.create_task(
+                            self._debounced_reprice(child.child_id),
+                            name=f"reprice-{child.child_id}",
+                        )
+
+    async def stop_repricing(self) -> None:
+        tasks = list(self._reprice_tasks.values())
+        self._reprice_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def reprice_child(self, child_id: str) -> None:
         child = next(child for parent in self.parents.values() for child in parent.children if child.child_id == child_id)

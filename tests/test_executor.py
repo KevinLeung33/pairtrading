@@ -18,6 +18,9 @@ class FakeExchange:
     def __init__(self):
         self.orders = {}
         self.next_id = 1
+        self.maker_bid = Decimal("65000")
+        self.maker_ask = Decimal("65000")
+        self.cancel_count = 0
         self.rules = {
             "BTC-USDT": InstrumentRules(Decimal("0.01"), Decimal("0.001"), Decimal("0.001")),
             "BTC-USDT-SWAP": InstrumentRules(Decimal("0.1"), Decimal("1"), Decimal("1"), Decimal("0.01")),
@@ -27,7 +30,7 @@ class FakeExchange:
         return self.rules[inst_id]
 
     async def maker_price(self, inst_id, side, offset_ticks=0):
-        return Decimal("65000")
+        return self.maker_bid if side == "buy" else self.maker_ask
 
     async def ioc_price(self, inst_id, side, slippage_bps):
         return Decimal("65000")
@@ -43,6 +46,7 @@ class FakeExchange:
         return OrderAck(ord_id, request.cl_ord_id, self.orders[ord_id].state)
 
     async def cancel_order(self, inst_id, ord_id, cl_ord_id):
+        self.cancel_count += 1
         self.orders[ord_id].state = "canceled"
 
     async def get_order(self, inst_id, ord_id, cl_ord_id):
@@ -129,3 +133,27 @@ async def test_reprice_resets_active_order_fill_counter():
     assert child.perp_order_id != old_order
     await executor.on_order_event(FillEvent(child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP", "filled", Decimal("6")))
     assert child.perp_filled_contracts == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_bbo_reprice_is_debounced():
+    import asyncio
+    exchange = FakeExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(ParentOrderRequest(
+        request_id="P6",
+        direction=Direction.SHORT_SPOT_LONG_SWAP,
+        spot_inst_id="BTC-USDT",
+        swap_inst_id="BTC-USDT-SWAP",
+        target_base_qty=Decimal("0.1"),
+        child_base_qty=Decimal("0.1"),
+        maker_reprice_interval_ms=30,
+    ))
+    exchange.maker_bid = Decimal("64999.9")
+    child = parent.children[0]
+    await executor.on_book("BTC-USDT-SWAP", Decimal("64999.9"), Decimal("65000.1"))
+    await executor.on_book("BTC-USDT-SWAP", Decimal("64999.8"), Decimal("65000.2"))
+    await asyncio.sleep(0.06)
+    assert exchange.cancel_count == 1
+    assert child.maker_price == Decimal("64999.9")
+    await executor.stop_repricing()

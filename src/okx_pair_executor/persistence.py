@@ -51,6 +51,7 @@ class JsonStateStore:
                 max_unhedged_base_qty=Decimal(request_raw["max_unhedged_base_qty"]),
                 hedge_tolerance_base_qty=Decimal(request_raw["hedge_tolerance_base_qty"]),
                 max_hedge_retries=int(request_raw["max_hedge_retries"]),
+                maker_reprice_interval_ms=int(request_raw.get("maker_reprice_interval_ms", 150)),
                 lark_report=bool(request_raw["lark_report"]),
             )
             children = []
@@ -72,6 +73,7 @@ class JsonStateStore:
                     spot_order_ids=child_raw.get("spot_order_ids", []),
                     last_perp_fill_px=Decimal(child_raw.get("last_perp_fill_px", "0")),
                     last_spot_fill_px=Decimal(child_raw.get("last_spot_fill_px", "0")),
+                    maker_price=Decimal(child_raw.get("maker_price", "0")),
                 )
                 children.append(child)
             parent = ParentOrder(

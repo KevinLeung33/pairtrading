@@ -88,6 +88,18 @@ bash scripts/run_demo.sh --request-id DEMO-REVERSE-001 2>&1 | tee runtime/demo-r
 - 最终两腿数量一致；
 - 没有错误地增加相反方向仓位。
 
+## 4. BBO 跟价改单
+
+配置：MAKER_REPRICE_INTERVAL_MS=150，TARGET_BASE_QTY=0.01，CHILD_BASE_QTY=0.01。
+
+观察 Maker 等待期间盘口变化：
+
+- 盘口移动后约 150ms 内最多触发一次改单；
+- 不应每个 BBO 跳动都立即撤单重挂；
+- 买入方向跟随 best_bid，卖出方向跟随 best_ask；
+- 不应出现两个同时工作的 Maker；
+- 日志中的订单数量应符合盘口变化次数，而不是 WebSocket 消息总数。
+
 ## 4. Maker 长时间不成交
 
 将目标数量保持最小，启动后观察 2～5 分钟，不要手动追价：

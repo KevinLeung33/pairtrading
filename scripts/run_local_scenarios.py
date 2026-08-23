@@ -30,6 +30,9 @@ class ScenarioExchange:
         self.counter = 0
         self.ioc_fill_ratio = Decimal("1")
         self.fail_ioc = False
+        self.maker_bid = Decimal("65000")
+        self.maker_ask = Decimal("65000")
+        self.cancel_count = 0
 
     async def instrument_rules(self, inst_id):
         if inst_id.endswith("SWAP"):
@@ -37,7 +40,7 @@ class ScenarioExchange:
         return InstrumentRules(Decimal("0.01"), Decimal("0.001"), Decimal("0.001"))
 
     async def maker_price(self, inst_id, side, offset_ticks=0):
-        return Decimal("65000")
+        return self.maker_bid if side == "buy" else self.maker_ask
 
     async def ioc_price(self, inst_id, side, slippage_bps):
         return Decimal("65000")
@@ -57,6 +60,7 @@ class ScenarioExchange:
         return OrderAck(order_id, request.cl_ord_id, state)
 
     async def cancel_order(self, inst_id, ord_id, cl_ord_id):
+        self.cancel_count += 1
         if ord_id in self.orders:
             self.orders[ord_id].state = "canceled"
 
@@ -157,6 +161,54 @@ async def reprice_and_duplicate() -> str:
     return "duplicate fill ignored and reprice preserved total fill"
 
 
+async def bbo_reprice_debounce() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("bbo-reprice", maker_reprice_interval_ms=50))
+    child = parent.children[0]
+    exchange.maker_bid = Decimal("64999.9")
+    await executor.on_book("BTC-USDT-SWAP", Decimal("64999.9"), Decimal("65000.1"))
+    await executor.on_book("BTC-USDT-SWAP", Decimal("64999.8"), Decimal("65000.2"))
+    await asyncio.sleep(0.08)
+    assert exchange.cancel_count == 1
+    makers = [item for item in exchange.requests if item.ord_type == "post_only"]
+    assert len(makers) == 2
+    assert makers[-1].price == Decimal("64999.9")
+    await executor.stop_repricing()
+    return "BBO move triggered one debounced Maker reprice, not one reprice per tick"
+
+
+async def parameter_matrix() -> str:
+    cases = 0
+    for direction in (Direction.SHORT_SPOT_LONG_SWAP, Direction.LONG_SPOT_SHORT_SWAP):
+        for target in (Decimal("0.1"), Decimal("0.2"), Decimal("0.5")):
+            for child_size in (Decimal("0.1"), Decimal("0.2")):
+                if child_size > target:
+                    continue
+                for exposure_limit in (Decimal("0"), Decimal("0.01"), Decimal("0.05")):
+                    cases += 1
+                    exchange = ScenarioExchange()
+                    executor = PairExecutor(exchange)
+                    parent = await executor.submit(make_request(
+                        f"matrix-{cases}",
+                        direction=direction,
+                        target_base_qty=target,
+                        child_base_qty=child_size,
+                        max_unhedged_base_qty=exposure_limit,
+                    ))
+                    for child in list(parent.children):
+                        await executor.on_order_event(FillEvent(
+                            child.perp_order_id,
+                            child.perp_cl_ord_id,
+                            "BTC-USDT-SWAP",
+                            "filled",
+                            child.perp_target_contracts,
+                        ))
+                    assert parent.state.value == "completed"
+                    assert parent.exposure == Decimal("0")
+    return f"{cases} combinations passed: 3 target sizes x 2 child sizes x 3 exposure limits x 2 directions"
+
+
 async def persistence() -> str:
     path = Path("runtime/reports/local-state-test.json")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -225,6 +277,8 @@ async def run() -> list[ScenarioResult]:
         ("exposure_limit", exposure_limit),
         ("reprice_and_duplicate", reprice_and_duplicate),
         ("persistence", persistence),
+        ("bbo_reprice_debounce", bbo_reprice_debounce),
+        ("parameter_matrix", parameter_matrix),
         ("duplicate_recovery_event", duplicate_recovery_event),
         ("out_of_order_fill", out_of_order_fill),
         ("unknown_order_event", unknown_order_event),

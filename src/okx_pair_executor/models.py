@@ -52,6 +52,7 @@ class ParentOrderRequest:
     max_unhedged_base_qty: Decimal = Decimal("0.01")
     hedge_tolerance_base_qty: Decimal = Decimal("0")
     max_hedge_retries: int = 3
+    maker_reprice_interval_ms: int = 150
     lark_report: bool = True
 
 
@@ -85,6 +86,7 @@ class ChildOrder:
     spot_order_ids: list[str] = field(default_factory=list)
     last_perp_fill_px: Decimal = Decimal("0")
     last_spot_fill_px: Decimal = Decimal("0")
+    maker_price: Decimal = Decimal("0")
 
     @property
     def perp_filled_base_qty(self) -> Decimal:

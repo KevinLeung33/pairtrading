@@ -32,6 +32,7 @@ class AppConfig:
     max_spot_slippage_bps: Decimal
     max_unhedged_base_qty: Decimal
     max_hedge_retries: int
+    maker_reprice_interval_ms: int
     state_path: str
     lark_webhook_url: str | None = None
     lark_secret: str | None = None
@@ -51,6 +52,7 @@ class AppConfig:
             max_spot_slippage_bps=Decimal(os.getenv("MAX_SPOT_SLIPPAGE_BPS", "10")),
             max_unhedged_base_qty=Decimal(os.getenv("MAX_UNHEDGED_BASE_QTY", "0.01")),
             max_hedge_retries=int(os.getenv("MAX_HEDGE_RETRIES", "3")),
+            maker_reprice_interval_ms=int(os.getenv("MAKER_REPRICE_INTERVAL_MS", "150")),
             state_path=os.getenv("STATE_PATH", "runtime/state.json"),
             lark_webhook_url=os.getenv("LARK_WEBHOOK_URL"),
             lark_secret=os.getenv("LARK_SECRET"),
@@ -67,5 +69,6 @@ class AppConfig:
             max_spot_slippage_bps=self.max_spot_slippage_bps,
             max_unhedged_base_qty=self.max_unhedged_base_qty,
             max_hedge_retries=self.max_hedge_retries,
+            maker_reprice_interval_ms=self.maker_reprice_interval_ms,
             lark_report=bool(self.lark_webhook_url),
         )
