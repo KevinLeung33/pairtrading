@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "okx-pair-executor"
+version = "0.1.0"
+description = "Fill-driven OKX spot/perpetual pair execution engine"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27",
+  "websockets>=12",
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+okx-pair-runner = "okx_pair_executor.main:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
