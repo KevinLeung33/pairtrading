@@ -52,6 +52,14 @@ class OkxV5Client:
         # Offset handling is intentionally left to the caller's price policy in MVP.
         return book["best_bid" if side == "buy" else "best_ask"]
 
+    async def ioc_price(self, inst_id: str, side: str, slippage_bps: Decimal) -> Decimal:
+        book = self._book.get(inst_id)
+        if not book:
+            raise RuntimeError(f"no order book for {inst_id}")
+        if side == "buy":
+            return book["best_ask"] * (Decimal("1") + slippage_bps / Decimal("10000"))
+        return book["best_bid"] * (Decimal("1") - slippage_bps / Decimal("10000"))
+
     def _sign(self, timestamp: str, method: str, path: str, body: str = "") -> str:
         raw = timestamp + method.upper() + path + body
         digest = hmac.new(self.secret_key.encode(), raw.encode(), hashlib.sha256).digest()

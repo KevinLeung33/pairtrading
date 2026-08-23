@@ -143,6 +143,8 @@ def report_payload(parent: ParentOrder, child: ChildOrder | None = None) -> dict
         "hedged_base_qty": str(parent.hedged_base_qty),
         "exposure": str(parent.exposure),
     }
+    if parent.error:
+        data["error"] = parent.error
     if child is not None:
         data["child"] = {
             "child_id": child.child_id,

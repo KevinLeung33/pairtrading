@@ -201,7 +201,7 @@ class PairExecutor:
                     side="buy" if buy else "sell",
                     ord_type="ioc",
                     size=qty,
-                    price=None,
+                    price=await self.exchange.ioc_price(parent.request.spot_inst_id, "buy" if buy else "sell", parent.request.max_spot_slippage_bps),
                     cl_ord_id=compact_client_id(f"{child.child_id}H{child.hedge_attempts:03d}"),
                     slippage_bps=parent.request.max_spot_slippage_bps,
                 )

@@ -39,6 +39,9 @@ class ScenarioExchange:
     async def maker_price(self, inst_id, side, offset_ticks=0):
         return Decimal("65000")
 
+    async def ioc_price(self, inst_id, side, slippage_bps):
+        return Decimal("65000")
+
     async def place_order(self, request: OrderRequest):
         self.counter += 1
         order_id = str(self.counter)
