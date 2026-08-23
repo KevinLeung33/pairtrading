@@ -235,7 +235,10 @@ class PairExecutor:
         if not self.notifier or not parent.request.lark_report:
             return
         payload = report_payload(parent, child)
-        await self.notifier.send(f"{reason}\n{payload}")
+        if hasattr(self.notifier, "send_report"):
+            await self.notifier.send_report(reason, payload)
+        else:
+            await self.notifier.send(f"{reason}\n{payload}")
 
     async def reconcile(self) -> list[FillEvent]:
         events = await self.exchange.reconcile(

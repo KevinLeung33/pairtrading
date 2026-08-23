@@ -169,6 +169,54 @@ async def persistence() -> str:
     return "parent and child mappings round-tripped through JSON"
 
 
+async def duplicate_recovery_event() -> str:
+    exchange = ScenarioExchange()
+    exchange.fail_ioc = True
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("duplicate-recovery", max_hedge_retries=1))
+    child = parent.children[0]
+    event = FillEvent(child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP", "filled", Decimal("10"))
+    await executor.on_order_event(event)
+    await executor.on_order_event(event)
+    assert parent.state.value == "recovery"
+    assert child.state.value == "recovery"
+    assert len(exchange.requests) == 2
+    return "duplicate terminal recovery event was ignored"
+
+
+async def out_of_order_fill() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("out-of-order"))
+    child = parent.children[0]
+    await executor.on_order_event(FillEvent(child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP", "partially_filled", Decimal("6")))
+    await executor.on_order_event(FillEvent(child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP", "partially_filled", Decimal("4")))
+    assert child.perp_filled_contracts == Decimal("6")
+    assert child.spot_filled_base_qty == Decimal("0.06")
+    return "out-of-order lower cumulative fill was ignored"
+
+
+async def unknown_order_event() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    await executor.submit(make_request("unknown-event"))
+    await executor.on_order_event(FillEvent("unknown", "unknown", "BTC-USDT-SWAP", "filled", Decimal("10")))
+    assert executor.parents["unknown-event"].filled_base_qty == Decimal("0")
+    return "unknown order event was ignored safely"
+
+
+async def invalid_duplicate_request() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    order = make_request("duplicate-request")
+    await executor.submit(order)
+    try:
+        await executor.submit(order)
+    except ValueError as exc:
+        assert "duplicate" in str(exc)
+        return "duplicate request id was rejected"
+    raise AssertionError("duplicate request was accepted")
+
 async def run() -> list[ScenarioResult]:
     scenarios = [
         ("full_fill", full_fill),
@@ -177,6 +225,10 @@ async def run() -> list[ScenarioResult]:
         ("exposure_limit", exposure_limit),
         ("reprice_and_duplicate", reprice_and_duplicate),
         ("persistence", persistence),
+        ("duplicate_recovery_event", duplicate_recovery_event),
+        ("out_of_order_fill", out_of_order_fill),
+        ("unknown_order_event", unknown_order_event),
+        ("invalid_duplicate_request", invalid_duplicate_request),
     ]
     results = []
     for name, function in scenarios:
@@ -204,9 +256,10 @@ def main() -> None:
     json_path = output_dir / f"local-scenarios-{stamp}.json"
     md_path = output_dir / f"local-scenarios-{stamp}.md"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    lines = [f"# Local Scenario Report ({stamp})", "", f"Overall: {'PASS' if payload['passed'] else 'FAIL'}", ""]
+    lines = [f"# Local Scenario Report ({stamp})", "", f"Overall: {'PASS' if payload['passed'] else 'FAIL'}", "", "| Scenario | Result | Details |", "|---|---|---|"]
     for item in results:
-        lines.append(f"- {'PASS' if item.passed else 'FAIL'} `{item.name}` — {item.details}")
+        result = "PASS" if item.passed else "FAIL"
+        lines.append(f"| `{item.name}` | **{result}** | {item.details} |")
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(json.dumps(payload, indent=2))
     print(f"\nReports: {json_path} and {md_path}")
