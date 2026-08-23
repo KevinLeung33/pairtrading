@@ -47,7 +47,7 @@ async def run(config: AppConfig, request_id: str) -> None:
         parent = await executor.submit(config.request(request_id))
         logging.info("submitted %s with %d children", request_id, len(parent.children))
 
-        while not stop_event.is_set() and parent.state.value not in {"completed", "failed", "canceled"}:
+        while not stop_event.is_set() and parent.state.value not in {"completed", "failed", "canceled", "recovery"}:
             await asyncio.sleep(5)
             await executor.reconcile()
         if stop_event.is_set() and parent.state.value == "running":

@@ -117,6 +117,8 @@ class PairExecutor:
     async def reprice_child(self, child_id: str) -> None:
         child = next(child for parent in self.parents.values() for child in parent.children if child.child_id == child_id)
         parent = self.parents_for_child(child)
+        if child.state in {ChildState.RECOVERY, ChildState.COMPLETED, ChildState.PARTIAL_COMPLETED, ChildState.FAILED}:
+            return
         if not child.perp_order_id or child.state not in {ChildState.MAKER_WORKING, ChildState.REPRICING}:
             return
         child.state = ChildState.REPRICING
@@ -147,6 +149,8 @@ class PairExecutor:
 
     async def _on_perp_event(self, child: ChildOrder, event: FillEvent) -> None:
         parent = self.parents_for_child(child)
+        if child.state in {ChildState.RECOVERY, ChildState.COMPLETED, ChildState.PARTIAL_COMPLETED, ChildState.FAILED}:
+            return
         previous = child.active_order_filled_contracts
         if event.acc_fill_sz < previous:
             return
@@ -160,6 +164,9 @@ class PairExecutor:
             child.spot_target_base_qty += delta_base
             child.state = ChildState.HEDGE_PENDING
             await self._hedge_pending(parent, child)
+            if child.state is ChildState.RECOVERY:
+                self._persist()
+                return
 
         if event.state in {"filled", "canceled"} and child.state is not ChildState.REPRICING:
             if child.unhedged_base_qty.copy_abs() > parent.request.max_unhedged_base_qty:
