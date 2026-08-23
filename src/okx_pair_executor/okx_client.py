@@ -7,7 +7,7 @@ import hmac
 import json
 import time
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 
 import httpx
@@ -33,6 +33,7 @@ class OkxV5Client:
         self.ws_url = "wss://wspap.okx.com:8443/ws/v5/private" if demo else "wss://ws.okx.com:8443/ws/v5/private"
         self._book: dict[str, dict[str, Decimal]] = {}
         self._known_order_ids: set[str] = set()
+        self._rules: dict[str, InstrumentRules] = {}
 
     def update_orderbook(self, inst_id: str, *, best_bid: Decimal, best_ask: Decimal) -> None:
         self._book[inst_id] = {"best_bid": best_bid, "best_ask": best_ask}
@@ -57,8 +58,14 @@ class OkxV5Client:
         if not book:
             raise RuntimeError(f"no order book for {inst_id}")
         if side == "buy":
-            return book["best_ask"] * (Decimal("1") + slippage_bps / Decimal("10000"))
-        return book["best_bid"] * (Decimal("1") - slippage_bps / Decimal("10000"))
+            raw = book["best_ask"] * (Decimal("1") + slippage_bps / Decimal("10000"))
+            rounding = ROUND_CEILING
+        else:
+            raw = book["best_bid"] * (Decimal("1") - slippage_bps / Decimal("10000"))
+            rounding = ROUND_FLOOR
+        rules = await self.instrument_rules(inst_id)
+        ticks = (raw / rules.tick_size).to_integral_value(rounding=rounding)
+        return ticks * rules.tick_size
 
     def _sign(self, timestamp: str, method: str, path: str, body: str = "") -> str:
         raw = timestamp + method.upper() + path + body
@@ -86,6 +93,8 @@ class OkxV5Client:
         return result
 
     async def instrument_rules(self, inst_id: str) -> InstrumentRules:
+        if inst_id in self._rules:
+            return self._rules[inst_id]
         inst_type = "SWAP" if inst_id.endswith("-SWAP") else "SPOT"
         result = await self._request("GET", f"/api/v5/account/instruments?instType={inst_type}")
         row = next(item for item in result["data"] if item["instId"] == inst_id)
