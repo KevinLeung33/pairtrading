@@ -2,6 +2,25 @@
 
 真实 Demo 测试必须逐项执行，每项使用独立 request id。不要并行启动多个 runner。
 
+.env 只需要保存 API、交易对和默认安全参数。测试参数可以直接通过命令行覆盖，不需要反复编辑 .env：
+
+命令示例：
+
+    bash scripts/run_demo.sh --request-id DEMO-P01 --direction short_spot_long_swap --target-base-qty 0.10 --child-base-qty 0.02 --max-unhedged-base-qty 0.01 --maker-reprice-interval-ms 150
+
+可覆盖的参数包括：
+
+- --direction
+- --target-base-qty
+- --child-base-qty
+- --max-unhedged-base-qty
+- --max-hedge-retries
+- --maker-reprice-interval-ms
+- --state-path
+
+每次测试只改变命令行参数和 request id，测试结束后检查仓位、挂单和日志，再执行下一组。
+
+
 ## 0. 前置检查
 
 ```bash
