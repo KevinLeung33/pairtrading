@@ -113,6 +113,7 @@ def main() -> int:
             "runner_exit_code": rc,
             "summary_exit_code": summary_rc,
             "issue_count": issues,
+            "issues": summary_payload.get("issues", [])[-20:],
             "log": str(log),
             "summary": str(summary) if summary else None,
         })
@@ -148,6 +149,8 @@ def write_report(stamp: str, results: list[dict[str, object]]) -> int:
             detail += f"; summary={item['summary']}"
         if "issue_count" in item:
             detail += f"; issues={item['issue_count']}"
+            if item.get("issues"):
+                detail += f"; first_issue={item['issues'][0]}"
         lines.append(f"| {item['name']} | {'PASS' if item['passed'] else 'FAIL'} | {detail} |")
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(json.dumps(payload, indent=2, ensure_ascii=False))

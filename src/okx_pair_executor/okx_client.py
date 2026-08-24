@@ -17,6 +17,15 @@ from .exchange import FillHandler
 from .models import FillEvent, InstrumentRules, OrderAck, OrderRequest, ParentOrder
 
 
+class OkxHttpError(RuntimeError):
+    def __init__(self, status_code: int, method: str, path: str, body: str):
+        super().__init__(f"OKX HTTP {status_code} {method} {path}: {body[:1000]}")
+        self.status_code = status_code
+        self.method = method
+        self.path = path
+        self.body = body
+
+
 class OkxV5Client:
     """Small native OKX V5 adapter.
 
@@ -86,7 +95,15 @@ class OkxV5Client:
             headers["x-simulated-trading"] = "1"
         async with httpx.AsyncClient(base_url=self.rest_url, timeout=5) as client:
             response = await client.request(method, path, content=body, headers=headers)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise OkxHttpError(
+                    response.status_code,
+                    method,
+                    path,
+                    response.text,
+                ) from exc
             result = response.json()
         if result.get("code") != "0":
             raise RuntimeError(f"OKX API error: {result}")
@@ -120,12 +137,37 @@ class OkxV5Client:
             payload["reduceOnly"] = "true"
         if request.slippage_bps is not None:
             payload["slippagePct"] = str(request.slippage_bps / Decimal("10000"))
-        result = await self._request("POST", "/api/v5/trade/order", payload)
+        try:
+            result = await self._request("POST", "/api/v5/trade/order", payload)
+        except OkxHttpError as exc:
+            if exc.status_code < 500:
+                raise
+            # A 5xx response is ambiguous: OKX may have accepted the order
+            # before the gateway returned an error. Resolve by clOrdId before
+            # allowing the caller to fail or retry.
+            existing = await self._find_order_by_client_id(request.inst_id, request.cl_ord_id)
+            if existing is not None:
+                self._known_order_ids.add(existing["ordId"])
+                return OrderAck(existing["ordId"], existing.get("clOrdId", request.cl_ord_id), existing.get("state", "live"))
+            raise RuntimeError(
+                f"OKX order submission ambiguous; no order found for clOrdId={request.cl_ord_id}; {exc}"
+            ) from exc
         row = result["data"][0]
         if row.get("sCode") != "0":
             raise RuntimeError(f"OKX order rejected: {row}")
         self._known_order_ids.add(row["ordId"])
         return OrderAck(row["ordId"], row.get("clOrdId", request.cl_ord_id), "live")
+
+    async def _find_order_by_client_id(self, inst_id: str, cl_ord_id: str) -> dict[str, Any] | None:
+        try:
+            result = await self._request(
+                "GET",
+                f"/api/v5/trade/order?instId={inst_id}&clOrdId={cl_ord_id}",
+            )
+        except Exception:
+            return None
+        rows = result.get("data") or []
+        return rows[0] if rows else None
 
     async def cancel_order(self, inst_id: str, ord_id: str, cl_ord_id: str) -> None:
         await self._request("POST", "/api/v5/trade/cancel-order", {"instId": inst_id, "ordId": ord_id, "clOrdId": cl_ord_id})
