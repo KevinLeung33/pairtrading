@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from okx_pair_executor.executor import PairExecutor
-from okx_pair_executor.models import Direction, FillEvent, InstrumentRules, OrderAck, OrderRequest, ParentOrderRequest
+from okx_pair_executor.models import Direction, FillEvent, InstrumentRules, OrderAck, OrderAction, OrderRequest, ParentOrderRequest
 from okx_pair_executor.persistence import JsonStateStore
 
 
@@ -287,6 +287,94 @@ async def invalid_duplicate_request() -> str:
         return "duplicate request id was rejected"
     raise AssertionError("duplicate request was accepted")
 
+async def close_short_spot_long_swap() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "close-short",
+        action=OrderAction.CLOSE,
+        direction=Direction.SHORT_SPOT_LONG_SWAP,
+    ))
+    child = parent.children[0]
+    maker = exchange.requests[0]
+    assert maker.side == "sell"
+    assert maker.reduce_only is True
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+        "filled", Decimal("10"),
+    ))
+    hedge = [item for item in exchange.requests if item.ord_type == "ioc"][0]
+    assert hedge.side == "buy"
+    assert parent.state.value == "completed"
+    return "close short-spot/long-swap used sell reduce-only Maker and buy spot IOC"
+
+
+async def close_long_spot_short_swap() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "close-long",
+        action=OrderAction.CLOSE,
+        direction=Direction.LONG_SPOT_SHORT_SWAP,
+    ))
+    child = parent.children[0]
+    maker = exchange.requests[0]
+    assert maker.side == "buy"
+    assert maker.reduce_only is True
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+        "filled", Decimal("10"),
+    ))
+    hedge = [item for item in exchange.requests if item.ord_type == "ioc"][0]
+    assert hedge.side == "sell"
+    assert parent.state.value == "completed"
+    return "close long-spot/short-swap used buy reduce-only Maker and sell spot IOC"
+
+
+async def close_split_position() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "close-split",
+        action=OrderAction.CLOSE,
+        direction=Direction.SHORT_SPOT_LONG_SWAP,
+        target_base_qty=Decimal("0.2"),
+        child_base_qty=Decimal("0.1"),
+    ))
+    for child in list(parent.children):
+        await executor.on_order_event(FillEvent(
+            child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+            "filled", child.perp_target_contracts,
+        ))
+    makers = [item for item in exchange.requests if item.ord_type == "post_only"]
+    assert len(makers) == 2
+    assert all(item.reduce_only for item in makers)
+    assert parent.state.value == "completed"
+    return "close position split into two reduce-only children with independent spot hedges"
+
+
+async def close_partial_ioc() -> str:
+    exchange = ScenarioExchange()
+    exchange.ioc_fill_ratio = Decimal("0.5")
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "close-partial-ioc",
+        action=OrderAction.CLOSE,
+        direction=Direction.LONG_SPOT_SHORT_SWAP,
+        max_unhedged_base_qty=Decimal("0.2"),
+        hedge_tolerance_base_qty=Decimal("0.001"),
+        max_hedge_retries=10,
+    ))
+    child = parent.children[0]
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+        "filled", Decimal("10"),
+    ))
+    assert parent.exposure.copy_abs() <= Decimal("0.001")
+    assert parent.state.value == "completed"
+    return "close partial IOC retried and finished within tolerance"
+
+
 async def one_btc_split_short() -> str:
     exchange = ScenarioExchange()
     executor = PairExecutor(exchange)
@@ -533,6 +621,10 @@ async def run() -> list[ScenarioResult]:
         ("out_of_order_fill", out_of_order_fill),
         ("unknown_order_event", unknown_order_event),
         ("invalid_duplicate_request", invalid_duplicate_request),
+        ("close_short_spot_long_swap", close_short_spot_long_swap),
+        ("close_long_spot_short_swap", close_long_spot_short_swap),
+        ("close_split_position", close_split_position),
+        ("close_partial_ioc", close_partial_ioc),
         ("one_btc_split_short", one_btc_split_short),
         ("one_btc_split_long", one_btc_split_long),
         ("maker_three_incremental_fills", maker_three_incremental_fills),

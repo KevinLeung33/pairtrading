@@ -123,6 +123,8 @@ class PairExecutor:
 
     async def _place_maker(self, parent: ParentOrder, child: ChildOrder, rules: InstrumentRules) -> None:
         buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
+        if parent.request.action.value == "close":
+            buy = not buy
         cl_ord_id = compact_client_id(f"{child.child_id}M")
         request = OrderRequest(
             inst_id=parent.request.swap_inst_id,
@@ -131,6 +133,7 @@ class PairExecutor:
             size=child.perp_target_contracts,
             price=await self.exchange.maker_price(parent.request.swap_inst_id, "buy" if buy else "sell"),
             cl_ord_id=cl_ord_id,
+            reduce_only=parent.request.action.value == "close",
         )
         ack = await self.exchange.place_order(request)
         child.perp_order_id = ack.ord_id
@@ -146,6 +149,8 @@ class PairExecutor:
             if parent.request.swap_inst_id != inst_id:
                 continue
             buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
+            if parent.request.action.value == "close":
+                buy = not buy
             target = best_bid if buy else best_ask
             for child in parent.children:
                 if child.state is not ChildState.MAKER_WORKING or not child.perp_order_id:
@@ -172,6 +177,8 @@ class PairExecutor:
             if not bbo:
                 return
             buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
+            if parent.request.action.value == "close":
+                buy = not buy
             target = bbo[0] if buy else bbo[1]
             if target != child.maker_price:
                 await self.reprice_child(child_id)
@@ -195,6 +202,8 @@ class PairExecutor:
                 bbo = self._latest_bbo.get(parent.request.swap_inst_id)
                 if bbo:
                     buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
+                    if parent.request.action.value == "close":
+                        buy = not buy
                     target = bbo[0] if buy else bbo[1]
                     if target != child.maker_price and child.child_id not in self._reprice_tasks:
                         self._reprice_tasks[child.child_id] = asyncio.create_task(
@@ -354,6 +363,8 @@ class PairExecutor:
                 child.state = ChildState.HEDGE_EXECUTING
                 child.hedge_attempts += 1
                 buy = parent.request.direction is Direction.LONG_SPOT_SHORT_SWAP
+                if parent.request.action.value == "close":
+                    buy = not buy
                 request = OrderRequest(
                     inst_id=parent.request.spot_inst_id,
                     side="buy" if buy else "sell",

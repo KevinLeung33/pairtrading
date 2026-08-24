@@ -6,7 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .models import ChildOrder, ChildState, Direction, ParentOrder, ParentOrderRequest, ParentOrderState
+from .models import ChildOrder, ChildState, Direction, OrderAction, ParentOrder, ParentOrderRequest, ParentOrderState
 
 
 def _json_value(value: Any) -> Any:
@@ -43,6 +43,7 @@ class JsonStateStore:
             request = ParentOrderRequest(
                 request_id=request_raw["request_id"],
                 direction=Direction(request_raw["direction"]),
+                action=OrderAction(request_raw.get("action", "open")),
                 spot_inst_id=request_raw["spot_inst_id"],
                 swap_inst_id=request_raw["swap_inst_id"],
                 target_base_qty=Decimal(request_raw["target_base_qty"]),

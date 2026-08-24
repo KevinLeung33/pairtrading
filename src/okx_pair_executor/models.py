@@ -11,6 +11,11 @@ class Direction(str, Enum):
     LONG_SPOT_SHORT_SWAP = "long_spot_short_swap"
 
 
+class OrderAction(str, Enum):
+    OPEN = "open"
+    CLOSE = "close"
+
+
 class ParentOrderState(str, Enum):
     CREATED = "created"
     RUNNING = "running"
@@ -48,6 +53,7 @@ class ParentOrderRequest:
     swap_inst_id: str
     target_base_qty: Decimal
     child_base_qty: Decimal
+    action: OrderAction = OrderAction.OPEN
     max_spot_slippage_bps: Decimal = Decimal("10")
     max_unhedged_base_qty: Decimal = Decimal("0.01")
     hedge_tolerance_base_qty: Decimal = Decimal("0")
@@ -146,6 +152,7 @@ def report_payload(
         "request_id": parent.request.request_id,
         "parent_state": parent.state.value,
         "direction": parent.request.direction.value,
+        "action": parent.request.action.value,
         "filled_base_qty": str(parent.filled_base_qty),
         "hedged_base_qty": str(parent.hedged_base_qty),
         "exposure": str(parent.exposure),

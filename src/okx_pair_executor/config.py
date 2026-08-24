@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from dotenv import load_dotenv
 
-from .models import Direction, ParentOrderRequest
+from .models import Direction, OrderAction, ParentOrderRequest
 
 load_dotenv()
 
@@ -27,6 +27,7 @@ class AppConfig:
     spot_inst_id: str
     swap_inst_id: str
     direction: Direction
+    action: OrderAction
     target_base_qty: Decimal
     child_base_qty: Decimal
     max_spot_slippage_bps: Decimal
@@ -47,6 +48,7 @@ class AppConfig:
             spot_inst_id=os.getenv("SPOT_INST_ID", "BTC-USDT"),
             swap_inst_id=os.getenv("SWAP_INST_ID", "BTC-USDT-SWAP"),
             direction=Direction(os.getenv("ARB_DIRECTION", Direction.SHORT_SPOT_LONG_SWAP.value)),
+            action=OrderAction(os.getenv("ARB_ACTION", OrderAction.OPEN.value)),
             target_base_qty=Decimal(env("TARGET_BASE_QTY")),
             child_base_qty=Decimal(env("CHILD_BASE_QTY")),
             max_spot_slippage_bps=Decimal(os.getenv("MAX_SPOT_SLIPPAGE_BPS", "10")),
@@ -62,6 +64,7 @@ class AppConfig:
         return ParentOrderRequest(
             request_id=request_id,
             direction=self.direction,
+            action=self.action,
             spot_inst_id=self.spot_inst_id,
             swap_inst_id=self.swap_inst_id,
             target_base_qty=self.target_base_qty,

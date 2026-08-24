@@ -12,7 +12,7 @@ from pathlib import Path
 from .config import AppConfig
 from .executor import PairExecutor
 from .market_data import OkxBookStream
-from .models import Direction, ParentOrderState
+from .models import Direction, OrderAction, ParentOrderState
 from .notifier import LarkNotifier
 from .okx_client import OkxV5Client
 from .persistence import JsonStateStore
@@ -72,6 +72,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the OKX pair executor")
     parser.add_argument("--request-id", default=None)
     parser.add_argument("--direction", choices=[item.value for item in Direction])
+    parser.add_argument("--action", choices=[item.value for item in OrderAction])
     parser.add_argument("--target-base-qty", type=Decimal)
     parser.add_argument("--child-base-qty", type=Decimal)
     parser.add_argument("--max-unhedged-base-qty", type=Decimal)
@@ -84,6 +85,8 @@ def main() -> None:
     overrides = {}
     if args.direction is not None:
         overrides["direction"] = Direction(args.direction)
+    if args.action is not None:
+        overrides["action"] = OrderAction(args.action)
     if args.target_base_qty is not None:
         overrides["target_base_qty"] = args.target_base_qty
     if args.child_base_qty is not None:
