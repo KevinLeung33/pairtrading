@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import subprocess
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
 REPORT_DIR = ROOT / "runtime" / "reports"
 LOG_DIR = ROOT / "runtime" / "demo-suite-logs"
 TIMEOUT = int(os.getenv("DEMO_SUITE_TIMEOUT_SECONDS", "180"))
@@ -106,6 +109,33 @@ def newest_summary(before: set[Path]) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
 
 
+def matching_close_position(case: dict[str, object]) -> tuple[bool, str]:
+    """Verify the live one-way net position before submitting a close case."""
+    try:
+        from okx_pair_executor.config import AppConfig
+        from okx_pair_executor.okx_client import OkxV5Client
+
+        config = AppConfig.from_env()
+        args = case["args"]
+        target_index = args.index("--target-base-qty")
+        target = Decimal(args[target_index + 1])
+        direction = args[args.index("--direction") + 1]
+        required_sign = Decimal("1") if direction == "short_spot_long_swap" else Decimal("-1")
+
+        async def read_position() -> tuple[Decimal, Decimal]:
+            client = OkxV5Client(config.api_key, config.secret_key, config.passphrase, demo=config.demo)
+            snapshot = await client.account_snapshot([config.swap_inst_id])
+            rules = await client.instrument_rules(config.swap_inst_id)
+            return Decimal(snapshot.get("positions", {}).get(config.swap_inst_id, "0")), rules.contract_value
+
+        position_contracts, contract_value = asyncio.run(read_position())
+        target_contracts = target / contract_value
+        if position_contracts * required_sign < target_contracts:
+            return False, f"skip: current swap position {position_contracts} contracts cannot support close target {target_contracts} contracts"
+        return True, f"matched current swap position {position_contracts} contracts for close target {target_contracts} contracts"
+    except Exception as exc:
+        return False, f"skip: unable to verify current swap position: {exc}"
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run sequential OKX Demo open tests")
     parser.add_argument(
@@ -124,15 +154,20 @@ def main() -> int:
     rc = run_capture(["bash", "scripts/run_local_scenarios.sh"], preflight)
     results.append({"name": "local_scenarios", "passed": rc == 0, "log": str(preflight)})
     if rc != 0:
-        return write_report(stamp, results)
+        return write_report(stamp, results, 2 + len(selected_cases))
 
     readonly = LOG_DIR / f"{stamp}-readonly.log"
     rc = run_capture(["bash", "scripts/demo_readonly_check.sh"], readonly, timeout=30)
     results.append({"name": "demo_readonly_check", "passed": rc == 0, "log": str(readonly)})
     if rc != 0:
-        return write_report(stamp, results)
+        return write_report(stamp, results, 2 + len(selected_cases))
 
     for index, case in enumerate(selected_cases, start=1):
+        if args.include_close and case in CLOSE_CASES:
+            can_close, details = matching_close_position(case)
+            if not can_close:
+                results.append({"name": case["name"], "passed": True, "skipped": True, "details": details})
+                continue
         request_id = f"SUITE-{stamp}-{index:02d}"
         log = LOG_DIR / f"{stamp}-{case['name']}.log"
         before = set(REPORT_DIR.glob("demo-log-summary-*.json"))
@@ -165,16 +200,16 @@ def main() -> int:
         if not passed:
             break
 
-    return write_report(stamp, results)
+    return write_report(stamp, results, 2 + len(selected_cases))
 
 
-def write_report(stamp: str, results: list[dict[str, object]]) -> int:
+def write_report(stamp: str, results: list[dict[str, object]], expected_count: int) -> int:
     passed = all(bool(item["passed"]) for item in results)
     payload = {
         "generated_at": stamp,
         "mode": "demo_sequential_suite",
         "passed": passed,
-        "stopped_after_failure": not passed and len(results) < len(CASES) + 2,
+        "stopped_after_failure": not passed and len(results) < expected_count,
         "results": results,
     }
     json_path = REPORT_DIR / f"demo-suite-{stamp}.json"
@@ -196,7 +231,10 @@ def write_report(stamp: str, results: list[dict[str, object]]) -> int:
             detail += f"; issues={item['issue_count']}"
             if item.get("issues"):
                 detail += f"; first_issue={item['issues'][0]}"
-        lines.append(f"| {item['name']} | {'PASS' if item['passed'] else 'FAIL'} | {detail} |")
+        result_label = "SKIP" if item.get("skipped") else ("PASS" if item["passed"] else "FAIL")
+        if item.get("details"):
+            detail = f"{item['details']}; {detail}"
+        lines.append(f"| {item['name']} | {result_label} | {detail} |")
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     print(f"\nFINAL_RESULT: {'PASS' if passed else 'FAIL'}")

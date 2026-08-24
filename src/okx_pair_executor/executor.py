@@ -119,6 +119,7 @@ class PairExecutor:
         self.parents[request.request_id] = parent
         await self._place_maker(parent, parent.children[0], swap_rules)
         self._persist()
+        await self._notify(parent, parent.children[0], "ORDER_STARTED")
         return parent
 
     async def _place_maker(self, parent: ParentOrder, child: ChildOrder, rules: InstrumentRules) -> None:
@@ -336,7 +337,9 @@ class PairExecutor:
         index = parent.children.index(child)
         if index + 1 < len(parent.children):
             rules = await self.exchange.instrument_rules(parent.request.swap_inst_id)
-            await self._place_maker(parent, parent.children[index + 1], rules)
+            next_child = parent.children[index + 1]
+            await self._place_maker(parent, next_child, rules)
+            await self._notify(parent, next_child, "CHILD_STARTED")
         elif parent.exposure.copy_abs() <= parent.request.hedge_tolerance_base_qty:
             parent.state = ParentOrderState.COMPLETED
             await self._notify(parent, child, "PARENT_COMPLETED")
@@ -404,10 +407,14 @@ class PairExecutor:
         if not self.notifier or not parent.request.lark_report:
             return
         execution = None
-        if reason == "PARENT_COMPLETED":
+        if reason in {"PARENT_COMPLETED", "CHILD_TERMINAL"}:
             if hasattr(self.exchange, "execution_details"):
                 try:
-                    execution = await self.exchange.execution_details(parent)
+                    execution = await self.exchange.execution_details(
+                        parent,
+                        child=child if reason == "CHILD_TERMINAL" else None,
+                        include_account=reason == "PARENT_COMPLETED",
+                    )
                 except Exception as exc:
                     execution = {"report_error": str(exc)}
         payload = report_payload(parent, child, execution)

@@ -14,7 +14,7 @@ import httpx
 import websockets
 
 from .exchange import FillHandler
-from .models import FillEvent, InstrumentRules, OrderAck, OrderRequest, ParentOrder
+from .models import ChildOrder, FillEvent, InstrumentRules, OrderAck, OrderRequest, ParentOrder
 
 
 class OkxHttpError(RuntimeError):
@@ -209,10 +209,16 @@ class OkxV5Client:
         )
         return result.get("data", [])
 
-    async def execution_details(self, parent: ParentOrder) -> dict[str, Any]:
+    async def execution_details(
+        self,
+        parent: ParentOrder,
+        child: ChildOrder | None = None,
+        include_account: bool = True,
+    ) -> dict[str, Any]:
         fills: list[tuple[str, Decimal, dict[str, Any]]] = []
         child_by_order: dict[str, Any] = {}
-        for child in parent.children:
+        selected_children = [child] if child is not None else parent.children
+        for child in selected_children:
             if child.perp_order_id:
                 child_by_order[child.perp_order_id] = child
             for order_id in child.spot_order_ids:
@@ -275,8 +281,8 @@ class OkxV5Client:
                     expected_positions.get(parent.request.swap_inst_id, Decimal("0")) + sign * size_raw
                 )
 
-        after = await self.account_snapshot([parent.request.spot_inst_id, parent.request.swap_inst_id])
-        before = parent.request.account_before or {}
+        after = await self.account_snapshot([parent.request.spot_inst_id, parent.request.swap_inst_id]) if include_account else {}
+        before = parent.request.account_before or {} if include_account else {}
         balance_before = {k: Decimal(v) for k, v in before.get("balances", {}).items()}
         balance_after = {k: Decimal(v) for k, v in after.get("balances", {}).items()}
         balance_delta_raw = {
@@ -309,11 +315,15 @@ class OkxV5Client:
         status = "UNAVAILABLE"
         if report_available:
             status = "MATCHED" if not balance_difference and not position_difference else "CHECK_REQUIRED"
-        return {
+        details = {
             "legs": legs,
             "spread_rate_pct": str(spread),
-            "unhedged_base_qty": str(parent.exposure),
-            "account_reconciliation": {
+            "unhedged_base_qty": str(
+                child.unhedged_base_qty if child is not None else parent.exposure
+            ),
+        }
+        if include_account:
+            details["account_reconciliation"] = {
                 "before": before,
                 "after": after,
                 "balance_delta": balance_delta,
@@ -323,8 +333,8 @@ class OkxV5Client:
                 "expected_position_delta_contracts": {key: str(value) for key, value in expected_positions.items() if value != 0},
                 "position_difference": position_difference,
                 "status": status,
-            },
-        }
+            }
+        return details
 
     async def reconcile(self, inst_ids: list[str]) -> list[FillEvent]:
         events: list[FillEvent] = []

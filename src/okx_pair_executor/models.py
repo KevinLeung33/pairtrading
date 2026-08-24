@@ -172,8 +172,11 @@ def report_payload(
             "child_id": child.child_id,
             "state": child.state.value,
             "target_base_qty": str(child.target_base_qty),
+            "perp_target_contracts": str(child.perp_target_contracts),
+            "perp_order_id": child.perp_order_id,
             "perp_filled_base_qty": str(child.perp_filled_base_qty),
             "spot_filled_base_qty": str(child.spot_filled_base_qty),
+            "maker_price": str(child.maker_price),
             "exposure": str(child.unhedged_base_qty),
             "hedge_attempts": child.hedge_attempts,
         }

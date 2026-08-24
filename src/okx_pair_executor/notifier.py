@@ -71,6 +71,35 @@ class LarkNotifier:
             ]
             if reconciliation.get("status") == "CHECK_REQUIRED":
                 fields.append(f"**差额**：余额 {reconciliation.get('balance_difference', {})}；仓位 {reconciliation.get('position_difference', {})}")
+        elif reason == "CHILD_TERMINAL":
+            template, icon, title = "green", "✅", "CHILD_COMPLETED"
+            legs = execution.get("legs", {})
+            perp = legs.get("perp", {})
+            spot = legs.get("spot", {})
+            fields = [
+                f"**任务**：{payload.get('request_id', '-')}",
+                f"**子单**：{child.get('child_id', '-')}",
+                f"**成交数量**：合约 {perp.get('filled_base_qty', child.get('perp_filled_base_qty', '0'))} / 现货 {spot.get('filled_base_qty', child.get('spot_filled_base_qty', '0'))}",
+                f"**成交均价**：合约 {_short_decimal(perp.get('avg_price', '0'))} / 现货 {_short_decimal(spot.get('avg_price', '0'))}",
+                f"**价差率**：{_short_decimal(execution.get('spread_rate_pct', '0'), 4)}%",
+                f"**手续费**：合约 {_format_map(perp.get('fees', {}))}；现货 {_format_map(spot.get('fees', {}))}",
+                f"**未对冲敞口**：{_short_decimal(execution.get('unhedged_base_qty', child.get('exposure', '0')), 8)}",
+                f"**对冲次数**：{child.get('hedge_attempts', 0)}",
+            ]
+        elif reason in {"ORDER_STARTED", "CHILD_STARTED"}:
+            template, icon, title = "blue", "▶️", reason
+            params = payload.get("parameters", {})
+            fields = [
+                f"**任务**：{payload.get('request_id', '-')}",
+                f"**动作/方向**：{payload.get('action', '-')} / {payload.get('direction', '-')}",
+                f"**目标数量**：{params.get('target_base_qty', '-')}",
+                f"**单批数量**：{params.get('child_base_qty', '-')}",
+                f"**当前子单**：{child.get('child_id', '-')}，目标 {child.get('target_base_qty', '-')}",
+                f"**合约张数**：{child.get('perp_target_contracts', '-')}",
+                f"**Maker 价格**：{child.get('maker_price', '-')}",
+                f"**最大敞口**：{params.get('max_unhedged_base_qty', '-')}",
+                f"**改单间隔**：{params.get('maker_reprice_interval_ms', '-')}ms",
+            ]
         elif reason in {"HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED", "REPRICE_FAILED"}:
             template, icon, title = "red", "🚨", "RISK_ALERT"
             fields = [
