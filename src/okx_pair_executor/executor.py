@@ -67,8 +67,13 @@ class PairExecutor:
 
         spot_rules = await self.exchange.instrument_rules(request.spot_inst_id)
         swap_rules = await self.exchange.instrument_rules(request.swap_inst_id)
-        if request.child_base_qty < spot_rules.min_size:
-            raise ValueError("child quantity below spot minimum")
+        swap_base_step = swap_rules.lot_size * swap_rules.contract_value
+        base_step = max(spot_rules.lot_size, swap_base_step)
+        min_base_qty = max(spot_rules.min_size, swap_rules.min_size * swap_rules.contract_value)
+        if request.target_base_qty < min_base_qty:
+            raise ValueError("target quantity below effective minimum")
+        if floor_to_step(request.target_base_qty, base_step) != request.target_base_qty:
+            raise ValueError("target quantity is not aligned to spot/swap executable step")
 
         parent = ParentOrder(request=request, state=ParentOrderState.RUNNING)
         if hasattr(self.exchange, "account_snapshot"):
@@ -85,7 +90,13 @@ class PairExecutor:
         index = 1
         while remaining > 0:
             child_base = min(remaining, request.child_base_qty)
-            child_base = floor_to_step(child_base, spot_rules.lot_size)
+            child_base = floor_to_step(child_base, base_step)
+            residual = remaining - child_base
+            if residual > 0 and residual < min_base_qty:
+                # Do not create an unexecutable tail child. Merge the dust
+                # into the current batch; child_base is allowed to exceed
+                # the preferred child size by this small tail.
+                child_base = remaining
             if child_base <= 0:
                 break
             perp_contracts = floor_to_step(child_base / swap_rules.contract_value, swap_rules.lot_size)
@@ -167,6 +178,14 @@ class PairExecutor:
         except asyncio.CancelledError:
             was_cancelled = True
             raise
+        except Exception as exc:
+            if child is not None:
+                parent = self.parents_for_child(child)
+                child.state = ChildState.RECOVERY
+                parent.state = ParentOrderState.RECOVERY
+                parent.error = f"Maker reprice failed: {exc}"
+                await self._notify(parent, child, "REPRICE_FAILED")
+                self._persist()
         finally:
             self._reprice_tasks.pop(child_id, None)
             if was_cancelled:
@@ -216,8 +235,40 @@ class PairExecutor:
             return
         child.state = ChildState.REPRICING
         old_order_id = child.perp_order_id
+        try:
+            await self.exchange.cancel_order(
+                parent.request.swap_inst_id,
+                old_order_id,
+                child.perp_cl_ord_id or "",
+            )
+        except Exception:
+            # The order may have filled or been canceled between the BBO event
+            # and cancel-order. Resolve its final cumulative fill before
+            # deciding whether a residual Maker must be recreated.
+            resolved = await self.exchange.get_order(
+                parent.request.swap_inst_id,
+                old_order_id,
+                child.perp_cl_ord_id or "",
+            )
+            resolved_state = (
+                "filled"
+                if resolved.acc_fill_sz >= child.perp_target_contracts
+                else "partially_filled"
+            )
+            await self.on_order_event(FillEvent(
+                ord_id=resolved.ord_id,
+                cl_ord_id=resolved.cl_ord_id,
+                inst_id=resolved.inst_id,
+                state=resolved_state,
+                acc_fill_sz=resolved.acc_fill_sz,
+                fill_px=resolved.fill_px,
+                fee=resolved.fee,
+                trade_id=resolved.trade_id,
+            ))
         self._children_by_order.pop(old_order_id, None)
-        await self.exchange.cancel_order(parent.request.swap_inst_id, child.perp_order_id, child.perp_cl_ord_id or "")
+        if child.state in {ChildState.COMPLETED, ChildState.PARTIAL_COMPLETED, ChildState.RECOVERY, ChildState.FAILED}:
+            self._persist()
+            return
         if child.perp_filled_contracts < child.perp_target_contracts:
             rules = await self.exchange.instrument_rules(parent.request.swap_inst_id)
             remaining = child.perp_target_contracts - child.perp_filled_contracts

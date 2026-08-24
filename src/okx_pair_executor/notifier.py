@@ -71,7 +71,7 @@ class LarkNotifier:
             ]
             if reconciliation.get("status") == "CHECK_REQUIRED":
                 fields.append(f"**差额**：余额 {reconciliation.get('balance_difference', {})}；仓位 {reconciliation.get('position_difference', {})}")
-        elif reason in {"HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED"}:
+        elif reason in {"HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED", "REPRICE_FAILED"}:
             template, icon, title = "red", "🚨", "RISK_ALERT"
             fields = [
                 f"**任务**：{payload.get('request_id', '-')}",

@@ -33,6 +33,7 @@ class ScenarioExchange:
         self.maker_bid = Decimal("65000")
         self.maker_ask = Decimal("65000")
         self.cancel_count = 0
+        self.cancel_race_fill = False
 
     async def instrument_rules(self, inst_id):
         if inst_id.endswith("SWAP"):
@@ -61,6 +62,10 @@ class ScenarioExchange:
 
     async def cancel_order(self, inst_id, ord_id, cl_ord_id):
         self.cancel_count += 1
+        if self.cancel_race_fill:
+            self.orders[ord_id].state = "filled"
+            self.orders[ord_id].acc_fill_sz = Decimal("10")
+            raise RuntimeError("simulated cancel raced with fill")
         if ord_id in self.orders:
             self.orders[ord_id].state = "canceled"
 
@@ -159,6 +164,19 @@ async def reprice_and_duplicate() -> str:
     assert child.perp_filled_contracts == Decimal("10")
     assert child.spot_filled_base_qty == Decimal("0.1")
     return "duplicate fill ignored and reprice preserved total fill"
+
+
+async def reprice_cancel_race_fill() -> str:
+    exchange = ScenarioExchange()
+    exchange.cancel_race_fill = True
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("reprice-race"))
+    child = parent.children[0]
+    await executor.reprice_child(child.child_id)
+    assert parent.state.value == "completed"
+    assert child.perp_filled_base_qty == Decimal("0.1")
+    assert child.spot_filled_base_qty == Decimal("0.1")
+    return "Maker fill racing with cancel was recovered from the order report"
 
 
 async def bbo_reprice_debounce() -> str:
@@ -410,6 +428,33 @@ async def partial_hedge_retry_exhaustion() -> str:
     return "partial IOC stopped after retry limit and preserved recovery exposure"
 
 
+async def merge_small_tail_child() -> str:
+    class TailMinExchange(ScenarioExchange):
+        async def instrument_rules(self, inst_id):
+            if inst_id.endswith("SWAP"):
+                return InstrumentRules(Decimal("0.1"), Decimal("1"), Decimal("10"), Decimal("0.01"))
+            return InstrumentRules(Decimal("0.01"), Decimal("0.001"), Decimal("0.1"))
+
+    exchange = TailMinExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "merge-tail",
+        target_base_qty=Decimal("0.15"),
+        child_base_qty=Decimal("0.1"),
+    ))
+    assert len(parent.children) == 1
+    assert parent.children[0].target_base_qty == Decimal("0.15")
+    await executor.on_order_event(FillEvent(
+        parent.children[0].perp_order_id,
+        parent.children[0].perp_cl_ord_id,
+        "BTC-USDT-SWAP",
+        "filled",
+        Decimal("15"),
+    ))
+    assert parent.state.value == "completed"
+    return "tail below effective minimum was merged into the previous batch"
+
+
 async def invalid_contract_quantity() -> str:
     exchange = ScenarioExchange()
     executor = PairExecutor(exchange)
@@ -420,7 +465,7 @@ async def invalid_contract_quantity() -> str:
             child_base_qty=Decimal("0.105"),
         ))
     except ValueError as exc:
-        assert "representable" in str(exc)
+        assert "aligned" in str(exc) or "representable" in str(exc)
         return "0.105 BTC was rejected because swap contract size cannot represent it exactly"
     raise AssertionError("unrepresentable contract quantity was accepted")
 
@@ -455,6 +500,7 @@ async def run() -> list[ScenarioResult]:
         ("reprice_and_duplicate", reprice_and_duplicate),
         ("persistence", persistence),
         ("bbo_reprice_debounce", bbo_reprice_debounce),
+        ("reprice_cancel_race_fill", reprice_cancel_race_fill),
         ("parameter_matrix", parameter_matrix),
         ("duplicate_recovery_event", duplicate_recovery_event),
         ("out_of_order_fill", out_of_order_fill),
@@ -468,6 +514,7 @@ async def run() -> list[ScenarioResult]:
         ("sell_side_bbo_reprice", sell_side_bbo_reprice),
         ("multiple_bbo_moves", multiple_bbo_moves),
         ("partial_hedge_retry_exhaustion", partial_hedge_retry_exhaustion),
+        ("merge_small_tail_child", merge_small_tail_child),
         ("invalid_contract_quantity", invalid_contract_quantity),
         ("one_btc_many_children", one_btc_many_children),
     ]
