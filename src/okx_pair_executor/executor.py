@@ -310,7 +310,7 @@ class PairExecutor:
         if not self.notifier or not parent.request.lark_report:
             return
         execution = None
-        if reason in {"PARENT_COMPLETED", "HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED"}:
+        if reason == "PARENT_COMPLETED":
             if hasattr(self.exchange, "execution_details"):
                 try:
                     execution = await self.exchange.execution_details(parent)

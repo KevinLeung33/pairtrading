@@ -36,61 +36,55 @@ class LarkNotifier:
 
     async def send_report(self, reason: str, payload: dict[str, Any]) -> None:
         child = payload.get("child", {})
-        status = child.get("state", payload.get("parent_state", "unknown"))
-        if reason in {"HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED"}:
-            template, icon = "red", "🚨"
-        elif reason in {"PARENT_COMPLETED", "CHILD_TERMINAL"}:
-            template, icon = "green", "✅"
-        else:
-            template, icon = "orange", "⚠️"
-        fields = [
-            f"**任务**：`{payload.get('request_id', '-')}`",
-            f"**方向**：`{payload.get('direction', '-')}`",
-            f"**状态**：`{status}`",
-            f"**合约成交**：`{payload.get('filled_base_qty', '0')}",
-            f"**现货对冲**：`{payload.get('hedged_base_qty', '0')}",
-            f"**当前敞口**：`{payload.get('exposure', '0')}",
-        ]
         execution = payload.get("execution", {})
-        if execution:
+        if reason == "PARENT_COMPLETED":
+            template, icon, title = "green", "✅", "EXECUTION_COMPLETED"
             legs = execution.get("legs", {})
             perp = legs.get("perp", {})
             spot = legs.get("spot", {})
             reconciliation = execution.get("account_reconciliation", {})
-            fields.extend([
-                f"**合约均价**：{perp.get('avg_price', '0')}",
-                f"**现货均价**：{spot.get('avg_price', '0')}",
-                f"**成交价差率**：{execution.get('spread_rate_pct', '0')}%",
-                f"**合约手续费**：{perp.get('fees', {})}",
-                f"**现货手续费**：{spot.get('fees', {})}",
+            fields = [
+                f"**任务**：{payload.get('request_id', '-')}",
+                f"**方向**：{payload.get('direction', '-')}",
+                f"**成交数量**：合约 {perp.get('filled_base_qty', '0')} / 现货 {spot.get('filled_base_qty', '0')}",
+                f"**成交均价**：合约 {perp.get('avg_price', '0')} / 现货 {spot.get('avg_price', '0')}",
+                f"**价差率**：{execution.get('spread_rate_pct', '0')}%",
+                f"**手续费**：合约 {perp.get('fees', {})}；现货 {spot.get('fees', {})}",
                 f"**未对冲敞口**：{execution.get('unhedged_base_qty', payload.get('exposure', '0'))}",
-                f"**账户对账**：{reconciliation.get('status', 'UNAVAILABLE')}",
-                f"**余额实际变化**：{reconciliation.get('balance_delta', {})}",
-                f"**余额理论变化**：{reconciliation.get('expected_balance_delta', {})}",
-                f"**余额差额**：{reconciliation.get('balance_difference', {})}",
-                f"**仓位实际变化**：{reconciliation.get('position_delta_contracts', {})}",
-                f"**仓位理论变化**：{reconciliation.get('expected_position_delta_contracts', {})}",
-                f"**仓位差额**：{reconciliation.get('position_difference', {})}",
-            ])
-        if child:
-            fields.extend([
-                f"**子单**：`{child.get('child_id', '-')}`",
-                f"**子单目标**：`{child.get('target_base_qty', '0')}`",
-                f"**子单合约成交**：`{child.get('perp_filled_base_qty', '0')}`",
-                f"**子单现货成交**：`{child.get('spot_filled_base_qty', '0')}`",
-                f"**对冲次数**：`{child.get('hedge_attempts', 0)}",
-            ])
-        if payload.get("error"):
-            fields.append(f"**错误**：`{payload['error']}`")
+                f"**资产对账**：{reconciliation.get('status', 'UNAVAILABLE')}",
+            ]
+            if reconciliation.get("status") == "CHECK_REQUIRED":
+                fields.append(f"**差额**：余额 {reconciliation.get('balance_difference', {})}；仓位 {reconciliation.get('position_difference', {})}")
+        elif reason in {"HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED"}:
+            template, icon, title = "red", "🚨", "RISK_ALERT"
+            fields = [
+                f"**任务**：{payload.get('request_id', '-')}",
+                f"**子单**：{child.get('child_id', '-')}",
+                f"**状态**：{child.get('state', payload.get('parent_state', '-'))}",
+                f"**当前敞口**：{payload.get('exposure', '0')}",
+                f"**对冲次数**：{child.get('hedge_attempts', 0)}",
+                f"**原因**：{payload.get('error', reason)}",
+            ]
+        else:
+            template, icon, title = "blue", "ℹ️", "CHILD_PROGRESS"
+            fields = [
+                f"**任务**：{payload.get('request_id', '-')}",
+                f"**子单**：{child.get('child_id', '-')}",
+                f"**状态**：{child.get('state', payload.get('parent_state', '-'))}",
+                f"**进度**：合约 {child.get('perp_filled_base_qty', '0')} / 现货 {child.get('spot_filled_base_qty', '0')}",
+                f"**当前敞口**：{payload.get('exposure', '0')}",
+                f"**对冲次数**：{child.get('hedge_attempts', 0)}",
+            ]
         card = {
             "config": {"wide_screen_mode": True},
             "header": {
                 "template": template,
-                "title": {"tag": "plain_text", "content": f"{icon} {reason}"},
+                "title": {"tag": "plain_text", "content": f"{icon} {title}"},
             },
             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(fields)}}],
         }
         await self._post({"msg_type": "interactive", "card": card})
+
 
 
 class NullNotifier:
