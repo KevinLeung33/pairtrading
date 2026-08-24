@@ -269,6 +269,183 @@ async def invalid_duplicate_request() -> str:
         return "duplicate request id was rejected"
     raise AssertionError("duplicate request was accepted")
 
+async def one_btc_split_short() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "one-btc-short",
+        target_base_qty=Decimal("1"),
+        child_base_qty=Decimal("0.25"),
+    ))
+    for child in list(parent.children):
+        await executor.on_order_event(FillEvent(
+            child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+            "filled", child.perp_target_contracts,
+        ))
+    assert len(parent.children) == 4
+    assert parent.state.value == "completed"
+    assert parent.exposure == Decimal("0")
+    return "1 BTC opened as 4 x 0.25 BTC short-spot/long-swap children"
+
+
+async def one_btc_split_long() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "one-btc-long",
+        direction=Direction.LONG_SPOT_SHORT_SWAP,
+        target_base_qty=Decimal("1"),
+        child_base_qty=Decimal("0.1"),
+    ))
+    for child in list(parent.children):
+        await executor.on_order_event(FillEvent(
+            child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+            "filled", child.perp_target_contracts,
+        ))
+    assert len(parent.children) == 10
+    assert parent.state.value == "completed"
+    assert parent.exposure == Decimal("0")
+    return "1 BTC opened as 10 x 0.1 BTC long-spot/short-swap children"
+
+
+async def maker_three_incremental_fills() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("maker-three-increments"))
+    child = parent.children[0]
+    for state, contracts in (("partially_filled", "2"), ("partially_filled", "5"), ("filled", "10")):
+        await executor.on_order_event(FillEvent(
+            child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+            state, Decimal(contracts),
+        ))
+    assert child.perp_filled_base_qty == Decimal("0.1")
+    assert child.spot_filled_base_qty == Decimal("0.1")
+    assert parent.state.value == "completed"
+    return "Maker cumulative fills 2 -> 5 -> 10 contracts were hedged by deltas"
+
+
+async def maker_cancel_after_partial_fill() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("maker-cancel-partial"))
+    child = parent.children[0]
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+        "partially_filled", Decimal("4"),
+    ))
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+        "canceled", Decimal("4"),
+    ))
+    assert child.state.value == "partial_completed"
+    assert parent.state.value == "completed"
+    assert parent.exposure == Decimal("0")
+    return "partially filled Maker cancellation completed without residual exposure"
+
+
+async def zero_fill_cancel() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("zero-fill-cancel"))
+    child = parent.children[0]
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+        "canceled", Decimal("0"),
+    ))
+    assert child.state.value == "partial_completed"
+    assert parent.state.value == "completed"
+    assert not [item for item in exchange.requests if item.ord_type == "ioc"]
+    return "zero-fill Maker cancellation did not create a hedge order"
+
+
+async def sell_side_bbo_reprice() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "sell-bbo",
+        direction=Direction.LONG_SPOT_SHORT_SWAP,
+        maker_reprice_interval_ms=20,
+    ))
+    child = parent.children[0]
+    exchange.maker_ask = Decimal("65010")
+    await executor.on_book("BTC-USDT-SWAP", Decimal("64990"), Decimal("65010"))
+    await asyncio.sleep(0.05)
+    makers = [item for item in exchange.requests if item.ord_type == "post_only"]
+    assert len(makers) == 2
+    assert makers[-1].side == "sell"
+    assert makers[-1].price == Decimal("65010")
+    await executor.stop_repricing()
+    return "sell Maker followed best ask with debounce"
+
+
+async def multiple_bbo_moves() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("multiple-bbo", maker_reprice_interval_ms=15))
+    child = parent.children[0]
+    for bid in ("64999.9", "64999.8", "64999.7"):
+        exchange.maker_bid = Decimal(bid)
+        await executor.on_book("BTC-USDT-SWAP", Decimal(bid), Decimal("65000.1"))
+        await asyncio.sleep(0.03)
+    makers = [item for item in exchange.requests if item.ord_type == "post_only"]
+    assert len(makers) == 4
+    assert child.state.value == "maker_working"
+    await executor.stop_repricing()
+    return "three separated BBO moves produced three controlled reprices"
+
+
+async def partial_hedge_retry_exhaustion() -> str:
+    exchange = ScenarioExchange()
+    exchange.ioc_fill_ratio = Decimal("0.75")
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("retry-exhaustion", max_hedge_retries=2))
+    child = parent.children[0]
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+        "filled", Decimal("10"),
+    ))
+    assert parent.state.value == "recovery"
+    assert child.hedge_attempts == 2
+    assert child.unhedged_base_qty > 0
+    return "partial IOC stopped after retry limit and preserved recovery exposure"
+
+
+async def invalid_contract_quantity() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    try:
+        await executor.submit(make_request(
+            "invalid-contract-qty",
+            target_base_qty=Decimal("0.105"),
+            child_base_qty=Decimal("0.105"),
+        ))
+    except ValueError as exc:
+        assert "representable" in str(exc)
+        return "0.105 BTC was rejected because swap contract size cannot represent it exactly"
+    raise AssertionError("unrepresentable contract quantity was accepted")
+
+
+async def one_btc_many_children() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "one-btc-many",
+        target_base_qty=Decimal("1"),
+        child_base_qty=Decimal("0.05"),
+        max_unhedged_base_qty=Decimal("0.01"),
+    ))
+    assert len(parent.children) == 20
+    for child in list(parent.children):
+        await executor.on_order_event(FillEvent(
+            child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+            "filled", child.perp_target_contracts,
+        ))
+    assert parent.state.value == "completed"
+    assert parent.filled_base_qty == Decimal("1")
+    assert parent.hedged_base_qty == Decimal("1")
+    return "1 BTC opened through 20 small children with zero final exposure"
+
+
 async def run() -> list[ScenarioResult]:
     scenarios = [
         ("full_fill", full_fill),
@@ -283,6 +460,16 @@ async def run() -> list[ScenarioResult]:
         ("out_of_order_fill", out_of_order_fill),
         ("unknown_order_event", unknown_order_event),
         ("invalid_duplicate_request", invalid_duplicate_request),
+        ("one_btc_split_short", one_btc_split_short),
+        ("one_btc_split_long", one_btc_split_long),
+        ("maker_three_incremental_fills", maker_three_incremental_fills),
+        ("maker_cancel_after_partial_fill", maker_cancel_after_partial_fill),
+        ("zero_fill_cancel", zero_fill_cancel),
+        ("sell_side_bbo_reprice", sell_side_bbo_reprice),
+        ("multiple_bbo_moves", multiple_bbo_moves),
+        ("partial_hedge_retry_exhaustion", partial_hedge_retry_exhaustion),
+        ("invalid_contract_quantity", invalid_contract_quantity),
+        ("one_btc_many_children", one_btc_many_children),
     ]
     results = []
     for name, function in scenarios:

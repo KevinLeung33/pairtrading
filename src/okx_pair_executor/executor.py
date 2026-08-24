@@ -90,6 +90,8 @@ class PairExecutor:
                 break
             perp_contracts = floor_to_step(child_base / swap_rules.contract_value, swap_rules.lot_size)
             validate_size(perp_contracts, swap_rules)
+            if perp_contracts * swap_rules.contract_value != child_base:
+                raise ValueError("child quantity is not exactly representable by swap contracts")
             child = ChildOrder(
                 child_id=f"{request.request_id}-C{index:04d}",
                 target_base_qty=child_base,
