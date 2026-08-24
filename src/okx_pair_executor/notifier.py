@@ -9,6 +9,20 @@ from typing import Any
 import httpx
 
 
+def _short_decimal(value: Any, places: int = 6) -> str:
+    try:
+        number = float(value)
+        return f"{number:.{places}f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_map(values: dict[str, Any], places: int = 6) -> str:
+    if not values:
+        return "-"
+    return "；".join(f"{key} {_short_decimal(value, places)}" for key, value in values.items())
+
+
 class LarkNotifier:
     def __init__(self, webhook_url: str, secret: str | None = None, timeout: float = 5.0):
         self.webhook_url = webhook_url
@@ -47,11 +61,13 @@ class LarkNotifier:
                 f"**任务**：{payload.get('request_id', '-')}",
                 f"**方向**：{payload.get('direction', '-')}",
                 f"**成交数量**：合约 {perp.get('filled_base_qty', '0')} / 现货 {spot.get('filled_base_qty', '0')}",
-                f"**成交均价**：合约 {perp.get('avg_price', '0')} / 现货 {spot.get('avg_price', '0')}",
-                f"**价差率**：{execution.get('spread_rate_pct', '0')}%",
-                f"**手续费**：合约 {perp.get('fees', {})}；现货 {spot.get('fees', {})}",
-                f"**未对冲敞口**：{execution.get('unhedged_base_qty', payload.get('exposure', '0'))}",
+                f"**成交均价**：合约 {_short_decimal(perp.get('avg_price', '0'))} / 现货 {_short_decimal(spot.get('avg_price', '0'))}",
+                f"**价差率**：{_short_decimal(execution.get('spread_rate_pct', '0'), 4)}%",
+                f"**手续费**：合约 {_format_map(perp.get('fees', {}))}；现货 {_format_map(spot.get('fees', {}))}",
+                f"**未对冲敞口**：{_short_decimal(execution.get('unhedged_base_qty', payload.get('exposure', '0')), 8)}",
                 f"**资产对账**：{reconciliation.get('status', 'UNAVAILABLE')}",
+                f"**余额变化**：{_format_map(reconciliation.get('balance_delta', {}))}",
+                f"**仓位变化**：{_format_map(reconciliation.get('position_delta_contracts', {}))}",
             ]
             if reconciliation.get("status") == "CHECK_REQUIRED":
                 fields.append(f"**差额**：余额 {reconciliation.get('balance_difference', {})}；仓位 {reconciliation.get('position_difference', {})}")
