@@ -189,6 +189,22 @@ class PairExecutor:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def cancel_active_makers(self) -> None:
+        for parent in self.parents.values():
+            for child in parent.children:
+                if not child.perp_order_id or child.state not in {ChildState.MAKER_WORKING, ChildState.REPRICING}:
+                    continue
+                await self.exchange.cancel_order(
+                    parent.request.swap_inst_id,
+                    child.perp_order_id,
+                    child.perp_cl_ord_id or "",
+                )
+                self._children_by_order.pop(child.perp_order_id, None)
+                child.state = ChildState.RECOVERY
+                parent.state = ParentOrderState.RECOVERY
+                parent.error = "controlled shutdown canceled active Maker"
+        self._persist()
+
     async def reprice_child(self, child_id: str) -> None:
         child = next(child for parent in self.parents.values() for child in parent.children if child.child_id == child_id)
         parent = self.parents_for_child(child)

@@ -57,6 +57,10 @@ async def run(config: AppConfig, request_id: str) -> None:
             parent.state = ParentOrderState.RECOVERY
             await executor.reconcile()
     finally:
+        try:
+            await executor.cancel_active_makers()
+        except Exception:
+            logging.exception("failed to cancel active Maker orders during shutdown")
         await executor.stop_repricing()
         book_stream.stop()
         for task in (book_task, order_task):
