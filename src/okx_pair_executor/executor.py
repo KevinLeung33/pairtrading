@@ -334,9 +334,23 @@ class PairExecutor:
         self._persist()
 
     async def _hedge_pending(self, parent: ParentOrder, child: ChildOrder) -> None:
+        spot_rules = await self.exchange.instrument_rules(parent.request.spot_inst_id)
         async with self._hedge_locks[child.child_id]:
             while child.pending_hedge_base_qty > parent.request.hedge_tolerance_base_qty:
                 qty = child.pending_hedge_base_qty
+                if qty < spot_rules.min_size:
+                    if qty <= parent.request.hedge_tolerance_base_qty:
+                        child.pending_hedge_base_qty = Decimal("0")
+                        child.state = ChildState.MAKER_WORKING
+                        return
+                    child.state = ChildState.RECOVERY
+                    parent.state = ParentOrderState.RECOVERY
+                    parent.error = (
+                        f"residual hedge {qty} below spot minimum {spot_rules.min_size}"
+                    )
+                    await self._notify(parent, child, "HEDGE_FAILED")
+                    self._persist()
+                    return
                 child.state = ChildState.HEDGE_EXECUTING
                 child.hedge_attempts += 1
                 buy = parent.request.direction is Direction.LONG_SPOT_SHORT_SWAP

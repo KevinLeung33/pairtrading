@@ -127,12 +127,12 @@ async def partial_ioc() -> str:
     parent = await executor.submit(make_request(
         "partial-ioc",
         max_unhedged_base_qty=Decimal("0.2"),
-        hedge_tolerance_base_qty=Decimal("0.0001"),
+        hedge_tolerance_base_qty=Decimal("0.001"),
         max_hedge_retries=10,
     ))
     child = parent.children[0]
     await executor.on_order_event(FillEvent(child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP", "filled", Decimal("10")))
-    assert parent.exposure.copy_abs() <= Decimal("0.0001")
+    assert parent.exposure.copy_abs() <= Decimal("0.001")
     assert sum(item.ord_type == "ioc" for item in exchange.requests) > 2
     return "partial IOC retried until residual was within tolerance"
 
@@ -412,6 +412,33 @@ async def multiple_bbo_moves() -> str:
     return "three separated BBO moves produced three controlled reprices"
 
 
+async def sub_minimum_residual_enters_recovery() -> str:
+    class DustSpotExchange(ScenarioExchange):
+        async def instrument_rules(self, inst_id):
+            if inst_id.endswith("SWAP"):
+                return InstrumentRules(Decimal("0.1"), Decimal("1"), Decimal("1"), Decimal("0.01"))
+            return InstrumentRules(Decimal("0.01"), Decimal("0.001"), Decimal("0.01"))
+
+    exchange = DustSpotExchange()
+    exchange.ioc_fill_ratio = Decimal("0.75")
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "sub-minimum-residual",
+        target_base_qty=Decimal("0.02"),
+        child_base_qty=Decimal("0.02"),
+        max_hedge_retries=5,
+    ))
+    child = parent.children[0]
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
+        "filled", Decimal("2"),
+    ))
+    assert parent.state.value == "recovery"
+    assert child.state.value == "recovery"
+    assert child.unhedged_base_qty == Decimal("0.005")
+    return "IOC residual below spot minimum entered recovery instead of being silently deferred"
+
+
 async def partial_hedge_retry_exhaustion() -> str:
     exchange = ScenarioExchange()
     exchange.ioc_fill_ratio = Decimal("0.75")
@@ -514,6 +541,7 @@ async def run() -> list[ScenarioResult]:
         ("sell_side_bbo_reprice", sell_side_bbo_reprice),
         ("multiple_bbo_moves", multiple_bbo_moves),
         ("partial_hedge_retry_exhaustion", partial_hedge_retry_exhaustion),
+        ("sub_minimum_residual_enters_recovery", sub_minimum_residual_enters_recovery),
         ("merge_small_tail_child", merge_small_tail_child),
         ("invalid_contract_quantity", invalid_contract_quantity),
         ("one_btc_many_children", one_btc_many_children),
