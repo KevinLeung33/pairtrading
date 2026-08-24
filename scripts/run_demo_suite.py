@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -11,6 +12,42 @@ ROOT = Path(__file__).resolve().parents[1]
 REPORT_DIR = ROOT / "runtime" / "reports"
 LOG_DIR = ROOT / "runtime" / "demo-suite-logs"
 TIMEOUT = int(os.getenv("DEMO_SUITE_TIMEOUT_SECONDS", "180"))
+
+CLOSE_CASES = [
+    {
+        "name": "close_short_small",
+        "args": [
+            "--action", "close",
+            "--direction", "short_spot_long_swap",
+            "--target-base-qty", "0.01",
+            "--child-base-qty", "0.01",
+            "--max-unhedged-base-qty", "0.01",
+            "--maker-reprice-interval-ms", "150",
+        ],
+    },
+    {
+        "name": "close_short_split",
+        "args": [
+            "--action", "close",
+            "--direction", "short_spot_long_swap",
+            "--target-base-qty", "0.05",
+            "--child-base-qty", "0.01",
+            "--max-unhedged-base-qty", "0.05",
+            "--maker-reprice-interval-ms", "200",
+        ],
+    },
+    {
+        "name": "close_long_split",
+        "args": [
+            "--action", "close",
+            "--direction", "long_spot_short_swap",
+            "--target-base-qty", "0.02",
+            "--child-base-qty", "0.01",
+            "--max-unhedged-base-qty", "0.01",
+            "--maker-reprice-interval-ms", "100",
+        ],
+    },
+]
 
 CASES = [
     {
@@ -70,6 +107,14 @@ def newest_summary(before: set[Path]) -> Path | None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Run sequential OKX Demo open tests")
+    parser.add_argument(
+        "--include-close",
+        action="store_true",
+        help="after opening, run matching close tests with the same quantities",
+    )
+    args = parser.parse_args()
+    selected_cases = CASES + (CLOSE_CASES if args.include_close else [])
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -87,7 +132,7 @@ def main() -> int:
     if rc != 0:
         return write_report(stamp, results)
 
-    for index, case in enumerate(CASES, start=1):
+    for index, case in enumerate(selected_cases, start=1):
         request_id = f"SUITE-{stamp}-{index:02d}"
         log = LOG_DIR / f"{stamp}-{case['name']}.log"
         before = set(REPORT_DIR.glob("demo-log-summary-*.json"))
