@@ -54,6 +54,7 @@ class ParentOrderRequest:
     max_hedge_retries: int = 3
     maker_reprice_interval_ms: int = 150
     lark_report: bool = True
+    account_before: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -136,7 +137,11 @@ class OrderAck:
     state: str
 
 
-def report_payload(parent: ParentOrder, child: ChildOrder | None = None) -> dict[str, Any]:
+def report_payload(
+    parent: ParentOrder,
+    child: ChildOrder | None = None,
+    execution: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     data: dict[str, Any] = {
         "request_id": parent.request.request_id,
         "parent_state": parent.state.value,
@@ -144,9 +149,17 @@ def report_payload(parent: ParentOrder, child: ChildOrder | None = None) -> dict
         "filled_base_qty": str(parent.filled_base_qty),
         "hedged_base_qty": str(parent.hedged_base_qty),
         "exposure": str(parent.exposure),
+        "parameters": {
+            "target_base_qty": str(parent.request.target_base_qty),
+            "child_base_qty": str(parent.request.child_base_qty),
+            "max_unhedged_base_qty": str(parent.request.max_unhedged_base_qty),
+            "maker_reprice_interval_ms": parent.request.maker_reprice_interval_ms,
+        },
     }
     if parent.error:
         data["error"] = parent.error
+    if execution:
+        data["execution"] = execution
     if child is not None:
         data["child"] = {
             "child_id": child.child_id,

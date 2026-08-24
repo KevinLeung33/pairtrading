@@ -14,7 +14,7 @@ import httpx
 import websockets
 
 from .exchange import FillHandler
-from .models import FillEvent, InstrumentRules, OrderAck, OrderRequest
+from .models import FillEvent, InstrumentRules, OrderAck, OrderRequest, ParentOrder
 
 
 class OkxV5Client:
@@ -133,6 +133,156 @@ class OkxV5Client:
     async def get_order(self, inst_id: str, ord_id: str, cl_ord_id: str) -> FillEvent:
         result = await self._request("GET", f"/api/v5/trade/order?instId={inst_id}&ordId={ord_id}")
         return self._fill_event(result["data"][0])
+
+    async def account_snapshot(self, inst_ids: list[str]) -> dict[str, Any]:
+        balance = await self._request("GET", "/api/v5/account/balance")
+        balances: dict[str, str] = {}
+        for row in (balance.get("data") or [{}])[0].get("details", []):
+            ccy = row.get("ccy")
+            if ccy:
+                balances[ccy] = row.get("cashBal") or row.get("eq") or "0"
+
+        positions: dict[str, str] = {}
+        for inst_id in inst_ids:
+            if not inst_id.endswith("-SWAP"):
+                continue
+            result = await self._request(
+                "GET",
+                f"/api/v5/account/positions?instType=SWAP&instId={inst_id}",
+            )
+            for row in result.get("data", []):
+                pos = Decimal(row.get("pos") or "0")
+                if row.get("posSide") == "short":
+                    pos = -pos
+                positions[inst_id] = str(pos)
+        return {"balances": balances, "positions": positions}
+
+    async def _trade_fills(self, inst_id: str, ord_id: str) -> list[dict[str, Any]]:
+        if not ord_id:
+            return []
+        inst_type = "SWAP" if inst_id.endswith("-SWAP") else "SPOT"
+        result = await self._request(
+            "GET",
+            f"/api/v5/trade/fills?instType={inst_type}&instId={inst_id}&ordId={ord_id}",
+        )
+        return result.get("data", [])
+
+    async def execution_details(self, parent: ParentOrder) -> dict[str, Any]:
+        fills: list[tuple[str, Decimal, dict[str, Any]]] = []
+        child_by_order: dict[str, Any] = {}
+        for child in parent.children:
+            if child.perp_order_id:
+                child_by_order[child.perp_order_id] = child
+            for order_id in child.spot_order_ids:
+                child_by_order[order_id] = child
+
+        for order_id, child in child_by_order.items():
+            inst_id = (
+                parent.request.swap_inst_id
+                if order_id == child.perp_order_id
+                else parent.request.spot_inst_id
+            )
+            for row in await self._trade_fills(inst_id, order_id):
+                fills.append((
+                    "perp" if inst_id == parent.request.swap_inst_id else "spot",
+                    child.contract_value if inst_id == parent.request.swap_inst_id else Decimal("1"),
+                    row,
+                ))
+
+        legs: dict[str, dict[str, Any]] = {}
+        for leg in ("perp", "spot"):
+            rows = [(multiplier, row) for kind, multiplier, row in fills if kind == leg]
+            qty = Decimal("0")
+            notional = Decimal("0")
+            fees: dict[str, Decimal] = {}
+            for multiplier, row in rows:
+                size = Decimal(row.get("fillSz") or "0") * multiplier
+                price = Decimal(row.get("fillPx") or "0")
+                qty += size
+                notional += size * price
+                fee_ccy = row.get("feeCcy") or row.get("fillFeeCcy") or "UNKNOWN"
+                fee = Decimal(row.get("fee") or row.get("fillFee") or "0")
+                fees[fee_ccy] = fees.get(fee_ccy, Decimal("0")) + fee
+            legs[leg] = {
+                "filled_base_qty": str(qty),
+                "avg_price": str(notional / qty if qty else Decimal("0")),
+                "fees": {ccy: str(value) for ccy, value in fees.items()},
+                "fill_count": len(rows),
+            }
+
+        spot_avg = Decimal(legs["spot"]["avg_price"])
+        perp_avg = Decimal(legs["perp"]["avg_price"])
+        spread = (perp_avg / spot_avg - Decimal("1")) * Decimal("100") if spot_avg else Decimal("0")
+        expected_balances: dict[str, Decimal] = {}
+        expected_positions: dict[str, Decimal] = {}
+        base_ccy, quote_ccy = parent.request.spot_inst_id.split("-", 1)
+        for kind, multiplier, row in fills:
+            size_raw = Decimal(row.get("fillSz") or "0")
+            price = Decimal(row.get("fillPx") or "0")
+            sign = Decimal("1") if row.get("side") == "buy" else Decimal("-1")
+            fee_ccy = row.get("feeCcy") or row.get("fillFeeCcy")
+            fee = Decimal(row.get("fee") or row.get("fillFee") or "0")
+            if fee_ccy:
+                expected_balances[fee_ccy] = expected_balances.get(fee_ccy, Decimal("0")) + fee
+            if kind == "spot":
+                size = size_raw * multiplier
+                expected_balances[base_ccy] = expected_balances.get(base_ccy, Decimal("0")) + sign * size
+                expected_balances[quote_ccy] = expected_balances.get(quote_ccy, Decimal("0")) - sign * size * price
+            else:
+                expected_positions[parent.request.swap_inst_id] = (
+                    expected_positions.get(parent.request.swap_inst_id, Decimal("0")) + sign * size_raw
+                )
+
+        after = await self.account_snapshot([parent.request.spot_inst_id, parent.request.swap_inst_id])
+        before = parent.request.account_before or {}
+        balance_before = {k: Decimal(v) for k, v in before.get("balances", {}).items()}
+        balance_after = {k: Decimal(v) for k, v in after.get("balances", {}).items()}
+        balance_delta_raw = {
+            key: balance_after.get(key, Decimal("0")) - balance_before.get(key, Decimal("0"))
+            for key in sorted(set(balance_before) | set(balance_after))
+        }
+        balance_delta = {
+            key: str(value) for key, value in balance_delta_raw.items() if value != 0
+        }
+        balance_difference = {
+            key: str(balance_delta_raw.get(key, Decimal("0")) - expected_balances.get(key, Decimal("0")))
+            for key in sorted(set(balance_delta_raw) | set(expected_balances))
+            if balance_delta_raw.get(key, Decimal("0")) != expected_balances.get(key, Decimal("0"))
+        }
+        position_before = {k: Decimal(v) for k, v in before.get("positions", {}).items()}
+        position_after = {k: Decimal(v) for k, v in after.get("positions", {}).items()}
+        position_delta_raw = {
+            key: position_after.get(key, Decimal("0")) - position_before.get(key, Decimal("0"))
+            for key in sorted(set(position_before) | set(position_after))
+        }
+        position_delta = {
+            key: str(value) for key, value in position_delta_raw.items() if value != 0
+        }
+        position_difference = {
+            key: str(position_delta_raw.get(key, Decimal("0")) - expected_positions.get(key, Decimal("0")))
+            for key in sorted(set(position_delta_raw) | set(expected_positions))
+            if position_delta_raw.get(key, Decimal("0")) != expected_positions.get(key, Decimal("0"))
+        }
+        report_available = bool(before) and bool(after)
+        status = "UNAVAILABLE"
+        if report_available:
+            status = "MATCHED" if not balance_difference and not position_difference else "CHECK_REQUIRED"
+        return {
+            "legs": legs,
+            "spread_rate_pct": str(spread),
+            "unhedged_base_qty": str(parent.exposure),
+            "account_reconciliation": {
+                "before": before,
+                "after": after,
+                "balance_delta": balance_delta,
+                "expected_balance_delta": {key: str(value) for key, value in expected_balances.items() if value != 0},
+                "balance_difference": balance_difference,
+                "position_delta_contracts": position_delta,
+                "expected_position_delta_contracts": {key: str(value) for key, value in expected_positions.items() if value != 0},
+                "position_difference": position_difference,
+                "status": status,
+            },
+        }
 
     async def reconcile(self, inst_ids: list[str]) -> list[FillEvent]:
         events: list[FillEvent] = []

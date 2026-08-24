@@ -51,6 +51,27 @@ class LarkNotifier:
             f"**现货对冲**：`{payload.get('hedged_base_qty', '0')}",
             f"**当前敞口**：`{payload.get('exposure', '0')}",
         ]
+        execution = payload.get("execution", {})
+        if execution:
+            legs = execution.get("legs", {})
+            perp = legs.get("perp", {})
+            spot = legs.get("spot", {})
+            reconciliation = execution.get("account_reconciliation", {})
+            fields.extend([
+                f"**合约均价**：{perp.get('avg_price', '0')}",
+                f"**现货均价**：{spot.get('avg_price', '0')}",
+                f"**成交价差率**：{execution.get('spread_rate_pct', '0')}%",
+                f"**合约手续费**：{perp.get('fees', {})}",
+                f"**现货手续费**：{spot.get('fees', {})}",
+                f"**未对冲敞口**：{execution.get('unhedged_base_qty', payload.get('exposure', '0'))}",
+                f"**账户对账**：{reconciliation.get('status', 'UNAVAILABLE')}",
+                f"**余额实际变化**：{reconciliation.get('balance_delta', {})}",
+                f"**余额理论变化**：{reconciliation.get('expected_balance_delta', {})}",
+                f"**余额差额**：{reconciliation.get('balance_difference', {})}",
+                f"**仓位实际变化**：{reconciliation.get('position_delta_contracts', {})}",
+                f"**仓位理论变化**：{reconciliation.get('expected_position_delta_contracts', {})}",
+                f"**仓位差额**：{reconciliation.get('position_difference', {})}",
+            ])
         if child:
             fields.extend([
                 f"**子单**：`{child.get('child_id', '-')}`",

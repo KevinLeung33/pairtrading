@@ -53,6 +53,7 @@ class JsonStateStore:
                 max_hedge_retries=int(request_raw["max_hedge_retries"]),
                 maker_reprice_interval_ms=int(request_raw.get("maker_reprice_interval_ms", 150)),
                 lark_report=bool(request_raw["lark_report"]),
+                account_before=request_raw.get("account_before", {}),
             )
             children = []
             for child_raw in item.get("children", []):

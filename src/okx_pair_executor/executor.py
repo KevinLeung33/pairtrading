@@ -71,6 +71,16 @@ class PairExecutor:
             raise ValueError("child quantity below spot minimum")
 
         parent = ParentOrder(request=request, state=ParentOrderState.RUNNING)
+        if hasattr(self.exchange, "account_snapshot"):
+            try:
+                parent.request.account_before.update(
+                    await self.exchange.account_snapshot(
+                        [request.spot_inst_id, request.swap_inst_id]
+                    )
+                )
+            except Exception:
+                # Account reporting must not prevent a protected Demo order from being submitted.
+                pass
         remaining = request.target_base_qty
         index = 1
         while remaining > 0:
@@ -299,7 +309,14 @@ class PairExecutor:
     async def _notify(self, parent: ParentOrder, child: ChildOrder, reason: str) -> None:
         if not self.notifier or not parent.request.lark_report:
             return
-        payload = report_payload(parent, child)
+        execution = None
+        if reason in {"PARENT_COMPLETED", "HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED"}:
+            if hasattr(self.exchange, "execution_details"):
+                try:
+                    execution = await self.exchange.execution_details(parent)
+                except Exception as exc:
+                    execution = {"report_error": str(exc)}
+        payload = report_payload(parent, child, execution)
         if hasattr(self.notifier, "send_report"):
             await self.notifier.send_report(reason, payload)
         else:
