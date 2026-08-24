@@ -61,8 +61,8 @@ class MarketSpreadTracker:
         spot_bid, spot_ask = self._bbo[next(k for k in self._bbo if not k.endswith("-SWAP"))]
         perp_bid, perp_ask = self._bbo[next(k for k in self._bbo if k.endswith("-SWAP"))]
         perp_buy, spot_buy = self._sides()
-        quote_sell = perp_bid if not perp_buy else spot_bid
-        quote_buy = spot_bid if not spot_buy else perp_bid
+        quote_sell = spot_bid if perp_buy else perp_bid
+        quote_buy = perp_bid if perp_buy else spot_bid
         executable_sell = perp_bid if not perp_buy else spot_bid
         executable_buy = spot_ask if spot_buy else perp_ask
         quote = (quote_sell / quote_buy - Decimal("1")) * Decimal("100") if quote_buy else Decimal("0")
