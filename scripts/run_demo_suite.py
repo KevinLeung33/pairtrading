@@ -185,6 +185,10 @@ def main() -> int:
         summary = newest_summary(before)
         summary_payload = json.loads(summary.read_text(encoding="utf-8")) if summary else {}
         issues = int(summary_payload.get("issue_count", 0))
+        issue_list = summary_payload.get("issues", [])[-20:]
+        if rc == 124:
+            issue_list = [f"runner timeout after {TIMEOUT}s"] + issue_list
+            issues = max(1, issues)
         passed = rc == 0 and summary_rc == 0 and issues == 0
         results.append({
             "name": case["name"],
@@ -193,7 +197,7 @@ def main() -> int:
             "runner_exit_code": rc,
             "summary_exit_code": summary_rc,
             "issue_count": issues,
-            "issues": summary_payload.get("issues", [])[-20:],
+            "issues": issue_list,
             "log": str(log),
             "summary": str(summary) if summary else None,
         })

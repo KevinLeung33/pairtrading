@@ -19,6 +19,7 @@ from .models import (
     report_payload,
 )
 from .persistence import JsonStateStore
+from .spread import MarketSpreadTracker
 
 
 def compact_client_id(value: str) -> str:
@@ -41,6 +42,7 @@ class PairExecutor:
         self._event_lock = asyncio.Lock()
         self._latest_bbo: dict[str, tuple[Decimal, Decimal]] = {}
         self._reprice_tasks: dict[str, asyncio.Task[None]] = {}
+        self._market_spreads: dict[str, MarketSpreadTracker] = {}
 
     def restore(self) -> dict[str, ParentOrder]:
         if not self.store:
@@ -76,6 +78,9 @@ class PairExecutor:
             raise ValueError("target quantity is not aligned to spot/swap executable step")
 
         parent = ParentOrder(request=request, state=ParentOrderState.RUNNING)
+        tracker = MarketSpreadTracker(request.direction, request.action)
+        tracker.seed(self._latest_bbo)
+        self._market_spreads[request.request_id] = tracker
         if hasattr(self.exchange, "account_snapshot"):
             try:
                 parent.request.account_before.update(
@@ -146,6 +151,8 @@ class PairExecutor:
 
     async def on_book(self, inst_id: str, best_bid: Decimal, best_ask: Decimal) -> None:
         self._latest_bbo[inst_id] = (best_bid, best_ask)
+        for tracker in self._market_spreads.values():
+            tracker.update(inst_id, best_bid, best_ask)
         for parent in self.parents.values():
             if parent.request.swap_inst_id != inst_id:
                 continue
@@ -417,6 +424,14 @@ class PairExecutor:
                     )
                 except Exception as exc:
                     execution = {"report_error": str(exc)}
+        if execution is not None and reason == "PARENT_COMPLETED":
+            tracker = self._market_spreads.get(parent.request.request_id)
+            if tracker is not None:
+                market = tracker.snapshot()
+                execution["market_spread"] = market
+                actual = Decimal(execution.get("effective_spread_rate_pct", "0"))
+                market_exec = Decimal(market.get("executable_twap_rate_pct", "0"))
+                execution["execution_vs_market_executable_rate_pct"] = str(actual - market_exec)
         payload = report_payload(parent, child, execution)
         if hasattr(self.notifier, "send_report"):
             await self.notifier.send_report(reason, payload)

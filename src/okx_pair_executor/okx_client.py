@@ -261,6 +261,15 @@ class OkxV5Client:
         spot_avg = Decimal(legs["spot"]["avg_price"])
         perp_avg = Decimal(legs["perp"]["avg_price"])
         spread = (perp_avg / spot_avg - Decimal("1")) * Decimal("100") if spot_avg else Decimal("0")
+        perp_buy = parent.request.direction.value == "short_spot_long_swap"
+        spot_buy = parent.request.direction.value == "long_spot_short_swap"
+        if parent.request.action.value == "close":
+            perp_buy = not perp_buy
+            spot_buy = not spot_buy
+        if perp_buy:
+            effective_spread = (spot_avg / perp_avg - Decimal("1")) * Decimal("100") if perp_avg else Decimal("0")
+        else:
+            effective_spread = (perp_avg / spot_avg - Decimal("1")) * Decimal("100") if spot_avg else Decimal("0")
         expected_balances: dict[str, Decimal] = {}
         expected_positions: dict[str, Decimal] = {}
         base_ccy, quote_ccy = parent.request.spot_inst_id.split("-", 1)
@@ -318,6 +327,7 @@ class OkxV5Client:
         details = {
             "legs": legs,
             "spread_rate_pct": str(spread),
+            "effective_spread_rate_pct": str(effective_spread),
             "unhedged_base_qty": str(
                 child.unhedged_base_qty if child is not None else parent.exposure
             ),
