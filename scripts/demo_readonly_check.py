@@ -20,6 +20,11 @@ async def main() -> None:
     print("Demo API authenticated")
     print(f"spot={config.spot_inst_id} lot={spot.lot_size} min={spot.min_size}")
     print(f"swap={config.swap_inst_id} lot={swap.lot_size} min={swap.min_size} ctVal={swap.contract_value}")
+    snapshot = await client.account_snapshot([config.spot_inst_id, config.swap_inst_id])
+    position_contracts = snapshot.get("positions", {}).get(config.swap_inst_id, "0")
+    position_base = Decimal(position_contracts) * swap.contract_value
+    print(f"balances BTC={snapshot.get('balances', {}).get('BTC', '0')} USDT={snapshot.get('balances', {}).get('USDT', '0')}")
+    print(f"swap_position contracts={position_contracts} base_qty={position_base} sign=long(+)/short(-)")
     print("No orders were placed.")
 
 
