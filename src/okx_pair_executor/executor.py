@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
 import time
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from .efficiency import ExecutionEfficiency
@@ -457,6 +460,22 @@ class PairExecutor:
             metrics = self._efficiency.get(parent.request.request_id)
             if metrics is not None:
                 execution["efficiency"] = metrics.snapshot()
+                report_dir = Path(os.getenv("EFFICIENCY_REPORT_DIR", "runtime/reports"))
+                report_dir.mkdir(parents=True, exist_ok=True)
+                report_path = report_dir / f"execution-efficiency-{parent.request.request_id}.json"
+                efficiency_report = {
+                    "request_id": parent.request.request_id,
+                    "direction": parent.request.direction.value,
+                    "action": parent.request.action.value,
+                    "efficiency": execution.get("efficiency", {}),
+                    "market_spread": execution.get("market_spread", {}),
+                    "execution_vs_market_executable_rate_pct": execution.get("execution_vs_market_executable_rate_pct", "0"),
+                    "legs": execution.get("legs", {}),
+                    "unhedged_base_qty": execution.get("unhedged_base_qty", "0"),
+                    "children": [child.child_id for child in parent.children],
+                }
+                report_path.write_text(json.dumps(efficiency_report, indent=2, ensure_ascii=False), encoding="utf-8")
+                execution["efficiency_report_path"] = str(report_path)
         payload = report_payload(parent, child, execution)
         if hasattr(self.notifier, "send_report"):
             await self.notifier.send_report(reason, payload)
