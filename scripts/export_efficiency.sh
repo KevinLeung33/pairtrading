@@ -2,5 +2,13 @@
 set -Eeuo pipefail
 PROJECT_DIR="$(cd "$(dirname "__BASH_SOURCE__")/.." && pwd)"
 cd "$PROJECT_DIR"
-source .venv/bin/activate
-exec python scripts/export_efficiency.py "$@"
+
+if [ -x ".venv/bin/python" ]; then
+  PYTHON_BIN=".venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="$(command -v python3)"
+else
+  PYTHON_BIN="$(command -v python)"
+fi
+
+exec "$PYTHON_BIN" scripts/export_efficiency.py "$@"
