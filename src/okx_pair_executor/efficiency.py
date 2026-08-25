@@ -67,6 +67,8 @@ class ExecutionEfficiency:
         if self.hedge_requested_qty and self.hedge_filled_qty < self.hedge_requested_qty:
             warnings.append("hedge_partial_or_unfilled")
         return {
+            "status": "WARN" if warnings else "OK",
+            "warnings": warnings,
             "bbo_events": self.bbo_events,
             "maker_reprices": self.maker_reprices,
             "maker_ack_latency": maker_ack,
