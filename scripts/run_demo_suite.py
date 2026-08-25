@@ -16,7 +16,34 @@ REPORT_DIR = ROOT / "runtime" / "reports"
 LOG_DIR = ROOT / "runtime" / "demo-suite-logs"
 TIMEOUT = int(os.getenv("DEMO_SUITE_TIMEOUT_SECONDS", "180"))
 
-CLOSE_CASES = [
+CLOSE_EXTENDED_CLOSE_CASES = [
+    {
+        "name": "close_short_tiny_tight",
+        "args": ["--action", "close", "--direction", "short_spot_long_swap", "--target-base-qty", "0.01", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.005", "--maker-reprice-interval-ms", "100"],
+    },
+    {
+        "name": "close_short_split_uneven",
+        "args": ["--action", "close", "--direction", "short_spot_long_swap", "--target-base-qty", "0.03", "--child-base-qty", "0.02", "--max-unhedged-base-qty", "0.02", "--maker-reprice-interval-ms", "250"],
+    },
+    {
+        "name": "close_short_split_slow",
+        "args": ["--action", "close", "--direction", "short_spot_long_swap", "--target-base-qty", "0.05", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.01", "--maker-reprice-interval-ms", "500"],
+    },
+    {
+        "name": "close_long_tiny_tight",
+        "args": ["--action", "close", "--direction", "long_spot_short_swap", "--target-base-qty", "0.01", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.005", "--maker-reprice-interval-ms", "100"],
+    },
+    {
+        "name": "close_long_split_uneven",
+        "args": ["--action", "close", "--direction", "long_spot_short_swap", "--target-base-qty", "0.03", "--child-base-qty", "0.02", "--max-unhedged-base-qty", "0.02", "--maker-reprice-interval-ms", "250"],
+    },
+    {
+        "name": "close_long_split_slow",
+        "args": ["--action", "close", "--direction", "long_spot_short_swap", "--target-base-qty", "0.05", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.01", "--maker-reprice-interval-ms", "500"],
+    },
+]
+
+CASES = [
     {
         "name": "close_short_small",
         "args": [
@@ -49,6 +76,33 @@ CLOSE_CASES = [
             "--max-unhedged-base-qty", "0.01",
             "--maker-reprice-interval-ms", "100",
         ],
+    },
+]
+
+EXTENDED_CLOSE_CASES = [
+    {
+        "name": "close_short_tiny_tight",
+        "args": ["--action", "close", "--direction", "short_spot_long_swap", "--target-base-qty", "0.01", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.005", "--maker-reprice-interval-ms", "100"],
+    },
+    {
+        "name": "close_short_split_uneven",
+        "args": ["--action", "close", "--direction", "short_spot_long_swap", "--target-base-qty", "0.03", "--child-base-qty", "0.02", "--max-unhedged-base-qty", "0.02", "--maker-reprice-interval-ms", "250"],
+    },
+    {
+        "name": "close_short_split_slow",
+        "args": ["--action", "close", "--direction", "short_spot_long_swap", "--target-base-qty", "0.05", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.01", "--maker-reprice-interval-ms", "500"],
+    },
+    {
+        "name": "close_long_tiny_tight",
+        "args": ["--action", "close", "--direction", "long_spot_short_swap", "--target-base-qty", "0.01", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.005", "--maker-reprice-interval-ms", "100"],
+    },
+    {
+        "name": "close_long_split_uneven",
+        "args": ["--action", "close", "--direction", "long_spot_short_swap", "--target-base-qty", "0.03", "--child-base-qty", "0.02", "--max-unhedged-base-qty", "0.02", "--maker-reprice-interval-ms", "250"],
+    },
+    {
+        "name": "close_long_split_slow",
+        "args": ["--action", "close", "--direction", "long_spot_short_swap", "--target-base-qty", "0.05", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.01", "--maker-reprice-interval-ms", "500"],
     },
 ]
 
@@ -85,6 +139,76 @@ CASES = [
     },
 ]
 
+
+EXTENDED_EXTENDED_CLOSE_CASES = [
+    {
+        "name": "close_short_tiny_tight",
+        "args": ["--action", "close", "--direction", "short_spot_long_swap", "--target-base-qty", "0.01", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.005", "--maker-reprice-interval-ms", "100"],
+    },
+    {
+        "name": "close_short_split_uneven",
+        "args": ["--action", "close", "--direction", "short_spot_long_swap", "--target-base-qty", "0.03", "--child-base-qty", "0.02", "--max-unhedged-base-qty", "0.02", "--maker-reprice-interval-ms", "250"],
+    },
+    {
+        "name": "close_short_split_slow",
+        "args": ["--action", "close", "--direction", "short_spot_long_swap", "--target-base-qty", "0.05", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.01", "--maker-reprice-interval-ms", "500"],
+    },
+    {
+        "name": "close_long_tiny_tight",
+        "args": ["--action", "close", "--direction", "long_spot_short_swap", "--target-base-qty", "0.01", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.005", "--maker-reprice-interval-ms", "100"],
+    },
+    {
+        "name": "close_long_split_uneven",
+        "args": ["--action", "close", "--direction", "long_spot_short_swap", "--target-base-qty", "0.03", "--child-base-qty", "0.02", "--max-unhedged-base-qty", "0.02", "--maker-reprice-interval-ms", "250"],
+    },
+    {
+        "name": "close_long_split_slow",
+        "args": ["--action", "close", "--direction", "long_spot_short_swap", "--target-base-qty", "0.05", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.01", "--maker-reprice-interval-ms", "500"],
+    },
+]
+
+CASES = [
+    {
+        "name": "short_tiny_fast_reprice",
+        "args": ["--direction", "short_spot_long_swap", "--target-base-qty", "0.01", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.005", "--maker-reprice-interval-ms", "100"],
+    },
+    {
+        "name": "short_three_children",
+        "args": ["--direction", "short_spot_long_swap", "--target-base-qty", "0.03", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.01", "--maker-reprice-interval-ms", "200"],
+    },
+    {
+        "name": "short_uneven_tail",
+        "args": ["--direction", "short_spot_long_swap", "--target-base-qty", "0.05", "--child-base-qty", "0.02", "--max-unhedged-base-qty", "0.02", "--maker-reprice-interval-ms", "250"],
+    },
+    {
+        "name": "short_exposure_tight",
+        "args": ["--direction", "short_spot_long_swap", "--target-base-qty", "0.02", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.001", "--maker-reprice-interval-ms", "150"],
+    },
+    {
+        "name": "short_reprice_slow",
+        "args": ["--direction", "short_spot_long_swap", "--target-base-qty", "0.02", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.01", "--maker-reprice-interval-ms", "500"],
+    },
+    {
+        "name": "long_tiny_fast_reprice",
+        "args": ["--direction", "long_spot_short_swap", "--target-base-qty", "0.01", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.005", "--maker-reprice-interval-ms", "100"],
+    },
+    {
+        "name": "long_three_children",
+        "args": ["--direction", "long_spot_short_swap", "--target-base-qty", "0.03", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.01", "--maker-reprice-interval-ms", "200"],
+    },
+    {
+        "name": "long_uneven_tail",
+        "args": ["--direction", "long_spot_short_swap", "--target-base-qty", "0.05", "--child-base-qty", "0.02", "--max-unhedged-base-qty", "0.02", "--maker-reprice-interval-ms", "250"],
+    },
+    {
+        "name": "long_exposure_tight",
+        "args": ["--direction", "long_spot_short_swap", "--target-base-qty", "0.02", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.001", "--maker-reprice-interval-ms", "150"],
+    },
+    {
+        "name": "long_reprice_slow",
+        "args": ["--direction", "long_spot_short_swap", "--target-base-qty", "0.02", "--child-base-qty", "0.01", "--max-unhedged-base-qty", "0.01", "--maker-reprice-interval-ms", "500"],
+    },
+]
 
 def run_capture(command: list[str], output: Path, timeout: int | None = None) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -139,12 +263,17 @@ def matching_close_position(case: dict[str, object]) -> tuple[bool, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run sequential OKX Demo open tests")
     parser.add_argument(
+        "--extended",
+        action="store_true",
+        help="run the extended 13-case parameter and direction matrix",
+    )
+    parser.add_argument(
         "--include-close",
         action="store_true",
         help="after opening, run matching close tests with the same quantities",
     )
     args = parser.parse_args()
-    selected_cases = CASES + (CLOSE_CASES if args.include_close else [])
+    selected_cases = CASES + (EXTENDED_CASES if args.extended else []) + (CLOSE_CASES if args.include_close else []) + (EXTENDED_CLOSE_CASES if args.extended and args.include_close else [])
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
