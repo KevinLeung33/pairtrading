@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from okx_pair_executor.executor import PairExecutor
+from okx_pair_executor.basis_strategy import BasisArbStrategy, BasisStrategyConfig
 from okx_pair_executor.models import Direction, FillEvent, InstrumentRules, OrderAck, OrderAction, OrderRequest, ParentOrderRequest
 from okx_pair_executor.persistence import JsonStateStore
 
@@ -178,6 +179,81 @@ async def reprice_and_duplicate() -> str:
     assert child.perp_filled_contracts == Decimal("10")
     assert child.spot_filled_base_qty == Decimal("0.1")
     return "duplicate fill ignored and reprice preserved total fill"
+
+
+async def basis_pause_resume() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    request = make_request(
+        "basis-pause-resume",
+        direction=Direction.LONG_SPOT_SHORT_SWAP,
+        target_base_qty=Decimal("0.1"),
+        child_base_qty=Decimal("0.1"),
+        lark_report=False,
+    )
+    strategy = BasisArbStrategy(
+        executor,
+        request,
+        BasisStrategyConfig(
+            entry_threshold_bp=Decimal("10"),
+            pause_threshold_bp=Decimal("5"),
+            resume_threshold_bp=Decimal("8"),
+            signal_interval_ms=0,
+        ),
+    )
+
+    async def feed(inst_id, bid, ask):
+        await strategy.on_book(inst_id, bid, ask)
+        await executor.on_book(inst_id, bid, ask)
+
+    await feed("BTC-USDT", Decimal("64990"), Decimal("65000"))
+    await feed("BTC-USDT-SWAP", Decimal("65100"), Decimal("65110"))
+    assert strategy.parent is not None
+    assert strategy.state.value == "running"
+    first_order = strategy.parent.children[0].perp_order_id
+    await feed("BTC-USDT-SWAP", Decimal("65000"), Decimal("65010"))
+    assert strategy.parent.state.value == "paused"
+    assert exchange.cancel_count == 1
+    await feed("BTC-USDT-SWAP", Decimal("65100"), Decimal("65110"))
+    assert strategy.parent.state.value == "running"
+    assert strategy.parent.children[0].perp_order_id != first_order
+    child = strategy.parent.children[0]
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP", "filled", Decimal("10"),
+    ))
+    await strategy.refresh()
+    assert strategy.state.value == "completed"
+    assert strategy.parent.exposure == Decimal("0")
+    return "basis entry paused on signal loss, resumed with a new Maker attempt, and completed"
+
+
+async def basis_direction_matrix() -> str:
+    values = []
+    for direction, spot, swap in [
+        (
+            Direction.LONG_SPOT_SHORT_SWAP,
+            (Decimal("64990"), Decimal("65000")),
+            (Decimal("65100"), Decimal("65110")),
+        ),
+        (
+            Direction.SHORT_SPOT_LONG_SWAP,
+            (Decimal("65100"), Decimal("65110")),
+            (Decimal("65000"), Decimal("65010")),
+        ),
+    ]:
+        exchange = ScenarioExchange()
+        executor = PairExecutor(exchange)
+        strategy = BasisArbStrategy(
+            executor,
+            make_request(f"basis-{direction.value}", direction=direction, lark_report=False),
+            BasisStrategyConfig(signal_interval_ms=0),
+        )
+        strategy.update_book("BTC-USDT", *spot)
+        strategy.update_book("BTC-USDT-SWAP", *swap)
+        value = strategy.current_basis_bp()
+        assert value is not None and value > Decimal("10")
+        values.append(value)
+    return "both opening directions produced positive executable basis signals: " + ", ".join(str(value) for value in values)
 
 
 async def atomic_amend() -> str:
@@ -672,6 +748,8 @@ async def run() -> list[ScenarioResult]:
         ("exposure_limit", exposure_limit),
         ("reprice_and_duplicate", reprice_and_duplicate),
         ("atomic_amend", atomic_amend),
+        ("basis_pause_resume", basis_pause_resume),
+        ("basis_direction_matrix", basis_direction_matrix),
         ("persistence", persistence),
         ("bbo_reprice_debounce", bbo_reprice_debounce),
         ("reprice_cancel_race_fill", reprice_cancel_race_fill),

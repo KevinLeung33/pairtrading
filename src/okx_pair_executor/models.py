@@ -20,6 +20,7 @@ class ParentOrderState(str, Enum):
     CREATED = "created"
     RUNNING = "running"
     RECOVERY = "recovery"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELED = "canceled"
@@ -96,6 +97,7 @@ class ChildOrder:
     last_perp_fill_px: Decimal = Decimal("0")
     last_spot_fill_px: Decimal = Decimal("0")
     maker_price: Decimal = Decimal("0")
+    maker_attempts: int = 0
 
     @property
     def perp_filled_base_qty(self) -> Decimal:

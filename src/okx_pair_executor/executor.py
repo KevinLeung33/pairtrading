@@ -144,7 +144,8 @@ class PairExecutor:
         buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
         if parent.request.action.value == "close":
             buy = not buy
-        cl_ord_id = compact_client_id(f"{child.child_id}M")
+        child.maker_attempts += 1
+        cl_ord_id = compact_client_id(f"{child.child_id}M{child.maker_attempts:03d}")
         started = time.perf_counter()
         quote_age_ms = max(0.0, (started - self._bbo_updated_at.get(parent.request.swap_inst_id, started)) * 1000)
         request = OrderRequest(
@@ -263,6 +264,105 @@ class PairExecutor:
                 parent.state = ParentOrderState.RECOVERY
                 parent.error = "controlled shutdown canceled active Maker"
         self._persist()
+
+    async def pause_parent(self, request_id: str, reason: str = "paused") -> ParentOrder:
+        parent = self.parents[request_id]
+        if parent.state in {
+            ParentOrderState.COMPLETED,
+            ParentOrderState.FAILED,
+            ParentOrderState.RECOVERY,
+            ParentOrderState.PAUSED,
+        }:
+            return parent
+        await self.stop_repricing()
+        parent.state = ParentOrderState.PAUSED
+        for child in list(parent.children):
+            if child.state not in {ChildState.MAKER_WORKING, ChildState.REPRICING} or not child.perp_order_id:
+                continue
+            order_id = child.perp_order_id
+            try:
+                await self.exchange.cancel_order(
+                    parent.request.swap_inst_id, order_id, child.perp_cl_ord_id or "",
+                )
+            except Exception:
+                # The order may have filled during the cancel request. The
+                # subsequent order query decides whether there is residual work.
+                pass
+            try:
+                resolved = await self.exchange.get_order(
+                    parent.request.swap_inst_id, order_id, child.perp_cl_ord_id or "",
+                )
+            except Exception as exc:
+                parent.state = ParentOrderState.RECOVERY
+                parent.error = f"unable to resolve paused Maker: {exc}"
+                await self._notify(parent, child, "REPRICE_FAILED")
+                continue
+            resolved_state = (
+                "filled"
+                if resolved.acc_fill_sz >= child.perp_target_contracts
+                else "canceled"
+            )
+            await self.on_order_event(FillEvent(
+                ord_id=resolved.ord_id,
+                cl_ord_id=resolved.cl_ord_id,
+                inst_id=resolved.inst_id,
+                state=resolved_state,
+                acc_fill_sz=resolved.acc_fill_sz,
+                fill_px=resolved.fill_px,
+                fee=resolved.fee,
+                trade_id=resolved.trade_id,
+                order_price=resolved.order_price,
+                amend_result=resolved.amend_result,
+            ))
+        if parent.state is ParentOrderState.PAUSED and (
+            parent.filled_base_qty >= parent.request.target_base_qty
+            and parent.exposure.copy_abs() <= parent.request.hedge_tolerance_base_qty
+        ):
+            parent.state = ParentOrderState.COMPLETED
+            if parent.children:
+                await self._notify(parent, parent.children[-1], "PARENT_COMPLETED")
+        self._persist()
+        return parent
+
+    async def resume_parent(self, request_id: str) -> ParentOrder:
+        parent = self.parents[request_id]
+        if parent.state is not ParentOrderState.PAUSED:
+            return parent
+        if parent.filled_base_qty >= parent.request.target_base_qty and (
+            parent.exposure.copy_abs() <= parent.request.hedge_tolerance_base_qty
+        ):
+            parent.state = ParentOrderState.COMPLETED
+            if parent.children:
+                await self._notify(parent, parent.children[-1], "PARENT_COMPLETED")
+            self._persist()
+            return parent
+        child = next(
+            (item for item in parent.children if item.state in {ChildState.CREATED, ChildState.PARTIAL_COMPLETED}),
+            None,
+        )
+        if child is None:
+            parent.state = ParentOrderState.RECOVERY
+            parent.error = "paused parent has no resumable child"
+            self._persist()
+            return parent
+        total_contracts = child.target_base_qty / child.contract_value
+        remaining_contracts = total_contracts - child.perp_filled_contracts
+        if remaining_contracts <= 0:
+            parent.state = ParentOrderState.RECOVERY
+            parent.error = "paused child has no executable residual"
+            self._persist()
+            return parent
+        child.perp_target_contracts = remaining_contracts
+        child.active_order_filled_contracts = Decimal("0")
+        child.pending_hedge_base_qty = Decimal("0")
+        child.state = ChildState.CREATED
+        parent.state = ParentOrderState.RUNNING
+        parent.error = None
+        rules = await self.exchange.instrument_rules(parent.request.swap_inst_id)
+        await self._place_maker(parent, child, rules, reprice=False)
+        await self._notify(parent, child, "CHILD_STARTED")
+        self._persist()
+        return parent
 
     async def reprice_child(self, child_id: str) -> None:
         child = next(child for parent in self.parents.values() for child in parent.children if child.child_id == child_id)
@@ -414,7 +514,8 @@ class PairExecutor:
             elif child.unhedged_base_qty.copy_abs() <= parent.request.hedge_tolerance_base_qty:
                 child.state = ChildState.COMPLETED if event.state == "filled" else ChildState.PARTIAL_COMPLETED
                 await self._notify(parent, child, "CHILD_TERMINAL")
-                await self._advance_parent(parent, child)
+                if parent.state is not ParentOrderState.PAUSED:
+                    await self._advance_parent(parent, child)
         if child.state in {
             ChildState.COMPLETED,
             ChildState.PARTIAL_COMPLETED,

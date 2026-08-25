@@ -76,6 +76,7 @@ class JsonStateStore:
                     last_perp_fill_px=Decimal(child_raw.get("last_perp_fill_px", "0")),
                     last_spot_fill_px=Decimal(child_raw.get("last_spot_fill_px", "0")),
                     maker_price=Decimal(child_raw.get("maker_price", "0")),
+                    maker_attempts=int(child_raw.get("maker_attempts", 0)),
                 )
                 children.append(child)
             parent = ParentOrder(

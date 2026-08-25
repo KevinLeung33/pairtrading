@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 from decimal import Decimal
 import logging
 import signal
-from datetime import datetime, timezone
 from pathlib import Path
 
+from .basis_strategy import BasisArbStrategy
 from .config import AppConfig
 from .executor import PairExecutor
 from .market_data import OkxBookStream
@@ -28,9 +29,14 @@ async def run(config: AppConfig, request_id: str) -> None:
     notifier = LarkNotifier(config.lark_webhook_url, config.lark_secret) if config.lark_webhook_url else None
     Path(config.state_path).parent.mkdir(parents=True, exist_ok=True)
     executor = PairExecutor(client, notifier, JsonStateStore(config.state_path))
+    executor.restore()
+    strategy: BasisArbStrategy | None = None
 
     async def on_book(inst_id, best_bid, best_ask):
         client.update_orderbook(inst_id, best_bid=best_bid, best_ask=best_ask)
+        # Let the strategy gate/cancel before PairExecutor schedules a reprice.
+        if strategy is not None:
+            await strategy.on_book(inst_id, best_bid, best_ask)
         await executor.on_book(inst_id, best_bid, best_ask)
 
     book_stream = OkxBookStream([config.spot_inst_id, config.swap_inst_id], on_book, demo=config.demo)
@@ -47,16 +53,34 @@ async def run(config: AppConfig, request_id: str) -> None:
 
     try:
         await client.wait_for_book([config.spot_inst_id, config.swap_inst_id])
-        parent = await executor.submit(config.request(request_id))
-        logging.info("submitted %s with %d children", request_id, len(parent.children))
-
-        while not stop_event.is_set() and parent.state.value not in {"completed", "failed", "canceled", "recovery"}:
-            await asyncio.sleep(5)
-            await executor.reconcile()
-        if stop_event.is_set() and parent.state.value == "running":
-            parent.state = ParentOrderState.RECOVERY
-            await executor.reconcile()
+        if config.strategy_mode == "basis":
+            strategy = BasisArbStrategy(
+                executor,
+                config.request(request_id),
+                config.basis_config(),
+                notifier,
+            )
+            logging.info("basis strategy %s waiting for entry basis", request_id)
+            while not stop_event.is_set() and not strategy.terminal:
+                await asyncio.sleep(5)
+                await executor.reconcile()
+                await strategy.refresh()
+        else:
+            parent = executor.parents.get(request_id)
+            if parent is None:
+                parent = await executor.submit(config.request(request_id))
+                logging.info("submitted %s with %d children", request_id, len(parent.children))
+            else:
+                logging.info("restored %s with %d children in state %s", request_id, len(parent.children), parent.state.value)
+            while not stop_event.is_set() and parent.state.value not in {"completed", "failed", "canceled", "recovery"}:
+                await asyncio.sleep(5)
+                await executor.reconcile()
+            if stop_event.is_set() and parent.state.value == "running":
+                parent.state = ParentOrderState.RECOVERY
+                await executor.reconcile()
     finally:
+        if strategy is not None:
+            await strategy.shutdown()
         try:
             await executor.cancel_active_makers()
         except Exception:
@@ -72,6 +96,7 @@ async def run(config: AppConfig, request_id: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the OKX pair executor")
     parser.add_argument("--request-id", default=None)
+    parser.add_argument("--strategy-mode", choices=["pair", "basis"])
     parser.add_argument("--direction", choices=[item.value for item in Direction])
     parser.add_argument("--action", choices=[item.value for item in OrderAction])
     parser.add_argument("--target-base-qty", type=Decimal)
@@ -79,11 +104,19 @@ def main() -> None:
     parser.add_argument("--max-unhedged-base-qty", type=Decimal)
     parser.add_argument("--max-hedge-retries", type=int)
     parser.add_argument("--maker-reprice-interval-ms", type=int)
+    parser.add_argument("--basis-entry-threshold-bp", type=Decimal)
+    parser.add_argument("--basis-pause-threshold-bp", type=Decimal)
+    parser.add_argument("--basis-resume-threshold-bp", type=Decimal)
+    parser.add_argument("--basis-exit-threshold-bp", type=Decimal)
+    parser.add_argument("--basis-resume-exposure-base-qty", type=Decimal)
+    parser.add_argument("--basis-signal-interval-ms", type=int)
     parser.add_argument("--state-path")
     parser.add_argument("--allow-live", action="store_true", help="allow live OKX endpoint; Demo is the default")
     args = parser.parse_args()
     config = AppConfig.from_env()
     overrides = {}
+    if args.strategy_mode is not None:
+        overrides["strategy_mode"] = args.strategy_mode
     if args.direction is not None:
         overrides["direction"] = Direction(args.direction)
     if args.action is not None:
@@ -98,10 +131,24 @@ def main() -> None:
         overrides["max_hedge_retries"] = args.max_hedge_retries
     if args.maker_reprice_interval_ms is not None:
         overrides["maker_reprice_interval_ms"] = args.maker_reprice_interval_ms
+    if args.basis_entry_threshold_bp is not None:
+        overrides["basis_entry_threshold_bp"] = args.basis_entry_threshold_bp
+    if args.basis_pause_threshold_bp is not None:
+        overrides["basis_pause_threshold_bp"] = args.basis_pause_threshold_bp
+    if args.basis_resume_threshold_bp is not None:
+        overrides["basis_resume_threshold_bp"] = args.basis_resume_threshold_bp
+    if args.basis_exit_threshold_bp is not None:
+        overrides["basis_exit_threshold_bp"] = args.basis_exit_threshold_bp
+    if args.basis_resume_exposure_base_qty is not None:
+        overrides["basis_resume_exposure_base_qty"] = args.basis_resume_exposure_base_qty
+    if args.basis_signal_interval_ms is not None:
+        overrides["basis_signal_interval_ms"] = args.basis_signal_interval_ms
     if args.state_path is not None:
         overrides["state_path"] = args.state_path
     if overrides:
         config = replace(config, **overrides)
+    if config.strategy_mode not in {"pair", "basis"}:
+        raise SystemExit("STRATEGY_MODE must be pair or basis")
     if not config.demo and not args.allow_live:
         raise SystemExit("live trading blocked: set OKX_DEMO=0 and pass --allow-live explicitly")
     request_id = args.request_id or datetime.now(timezone.utc).strftime("ARB-%Y%m%d-%H%M%S")

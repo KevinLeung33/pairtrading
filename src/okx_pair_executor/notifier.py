@@ -75,6 +75,21 @@ class LarkNotifier:
             ]
             if reconciliation.get("status") == "CHECK_REQUIRED":
                 fields.append(f"**差额**：余额 {reconciliation.get('balance_difference', {})}；仓位 {reconciliation.get('position_difference', {})}")
+        elif reason in {"BASIS_STARTED", "BASIS_PAUSED", "BASIS_RESUMED"}:
+            strategy = payload.get("strategy", {})
+            template = "yellow" if reason == "BASIS_PAUSED" else "blue"
+            title = reason
+            icon = "⏸️" if reason == "BASIS_PAUSED" else "📈"
+            fields = [
+                f"**任务**：{payload.get('request_id', '-')}",
+                f"**策略状态**：{reason}",
+                f"**原因**：{strategy.get('reason', '-') or '-'}",
+                f"**方向/动作**：{payload.get('direction', '-')} / {payload.get('action', '-')}",
+                f"**当前 Basis**：{_short_decimal(strategy.get('basis_bp', '0'), 2)} bp",
+                f"**阈值**：入场 {strategy.get('entry_threshold_bp', '-')} / 暂停 {strategy.get('pause_threshold_bp', '-')} / 恢复 {strategy.get('resume_threshold_bp', '-')} bp",
+                f"**成交/对冲**：{payload.get('filled_base_qty', '0')} / {payload.get('hedged_base_qty', '0')}",
+                f"**当前敞口**：{payload.get('exposure', '0')}",
+            ]
         elif reason == "CHILD_TERMINAL":
             template, icon, title = "green", "✅", "CHILD_COMPLETED"
             legs = execution.get("legs", {})

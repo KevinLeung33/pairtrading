@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from dotenv import load_dotenv
 
+from .basis_strategy import BasisStrategyConfig
 from .models import Direction, OrderAction, ParentOrderRequest
 
 load_dotenv()
@@ -26,6 +27,7 @@ class AppConfig:
     demo: bool
     spot_inst_id: str
     swap_inst_id: str
+    strategy_mode: str
     direction: Direction
     action: OrderAction
     target_base_qty: Decimal
@@ -34,6 +36,12 @@ class AppConfig:
     max_unhedged_base_qty: Decimal
     max_hedge_retries: int
     maker_reprice_interval_ms: int
+    basis_entry_threshold_bp: Decimal
+    basis_pause_threshold_bp: Decimal
+    basis_resume_threshold_bp: Decimal
+    basis_exit_threshold_bp: Decimal
+    basis_resume_exposure_base_qty: Decimal
+    basis_signal_interval_ms: int
     state_path: str
     lark_webhook_url: str | None = None
     lark_secret: str | None = None
@@ -47,6 +55,7 @@ class AppConfig:
             demo=os.getenv("OKX_DEMO", "1").lower() in {"1", "true", "yes"},
             spot_inst_id=os.getenv("SPOT_INST_ID", "BTC-USDT"),
             swap_inst_id=os.getenv("SWAP_INST_ID", "BTC-USDT-SWAP"),
+            strategy_mode=os.getenv("STRATEGY_MODE", "pair"),
             direction=Direction(os.getenv("ARB_DIRECTION", Direction.SHORT_SPOT_LONG_SWAP.value)),
             action=OrderAction(os.getenv("ARB_ACTION", OrderAction.OPEN.value)),
             target_base_qty=Decimal(env("TARGET_BASE_QTY")),
@@ -55,9 +64,25 @@ class AppConfig:
             max_unhedged_base_qty=Decimal(os.getenv("MAX_UNHEDGED_BASE_QTY", "0.01")),
             max_hedge_retries=int(os.getenv("MAX_HEDGE_RETRIES", "3")),
             maker_reprice_interval_ms=int(os.getenv("MAKER_REPRICE_INTERVAL_MS", "150")),
+            basis_entry_threshold_bp=Decimal(os.getenv("BASIS_ENTRY_THRESHOLD_BP", "10")),
+            basis_pause_threshold_bp=Decimal(os.getenv("BASIS_PAUSE_THRESHOLD_BP", "5")),
+            basis_resume_threshold_bp=Decimal(os.getenv("BASIS_RESUME_THRESHOLD_BP", "8")),
+            basis_exit_threshold_bp=Decimal(os.getenv("BASIS_EXIT_THRESHOLD_BP", "0")),
+            basis_resume_exposure_base_qty=Decimal(os.getenv("BASIS_RESUME_EXPOSURE_BASE_QTY", "0.005")),
+            basis_signal_interval_ms=int(os.getenv("BASIS_SIGNAL_INTERVAL_MS", "50")),
             state_path=os.getenv("STATE_PATH", "runtime/state.json"),
             lark_webhook_url=os.getenv("LARK_WEBHOOK_URL"),
             lark_secret=os.getenv("LARK_SECRET"),
+        )
+
+    def basis_config(self) -> BasisStrategyConfig:
+        return BasisStrategyConfig(
+            entry_threshold_bp=self.basis_entry_threshold_bp,
+            pause_threshold_bp=self.basis_pause_threshold_bp,
+            resume_threshold_bp=self.basis_resume_threshold_bp,
+            exit_threshold_bp=self.basis_exit_threshold_bp,
+            resume_exposure_base_qty=self.basis_resume_exposure_base_qty,
+            signal_interval_ms=self.basis_signal_interval_ms,
         )
 
     def request(self, request_id: str) -> ParentOrderRequest:
