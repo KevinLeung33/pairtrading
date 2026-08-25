@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from decimal import Decimal
 from typing import Any
 
+from .efficiency import ExecutionEfficiency
 from .exchange import ExchangeAdapter, floor_to_step, validate_size
 from .models import (
     ChildOrder,
@@ -41,6 +43,8 @@ class PairExecutor:
         self._hedge_locks: dict[str, asyncio.Lock] = {}
         self._event_lock = asyncio.Lock()
         self._latest_bbo: dict[str, tuple[Decimal, Decimal]] = {}
+        self._bbo_updated_at: dict[str, float] = {}
+        self._efficiency: dict[str, ExecutionEfficiency] = {}
         self._reprice_tasks: dict[str, asyncio.Task[None]] = {}
         self._market_spreads: dict[str, MarketSpreadTracker] = {}
 
@@ -81,6 +85,7 @@ class PairExecutor:
         tracker = MarketSpreadTracker(request.direction, request.action)
         tracker.seed(self._latest_bbo)
         self._market_spreads[request.request_id] = tracker
+        self._efficiency[request.request_id] = ExecutionEfficiency()
         if hasattr(self.exchange, "account_snapshot"):
             try:
                 parent.request.account_before.update(
@@ -122,16 +127,18 @@ class PairExecutor:
         if remaining > 0:
             raise ValueError(f"target quantity leaves unrepresentable remainder: {remaining}")
         self.parents[request.request_id] = parent
-        await self._place_maker(parent, parent.children[0], swap_rules)
+        await self._place_maker(parent, parent.children[0], swap_rules, reprice=False)
         self._persist()
         await self._notify(parent, parent.children[0], "ORDER_STARTED")
         return parent
 
-    async def _place_maker(self, parent: ParentOrder, child: ChildOrder, rules: InstrumentRules) -> None:
+    async def _place_maker(self, parent: ParentOrder, child: ChildOrder, rules: InstrumentRules, *, reprice: bool = False) -> None:
         buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
         if parent.request.action.value == "close":
             buy = not buy
         cl_ord_id = compact_client_id(f"{child.child_id}M")
+        started = time.perf_counter()
+        quote_age_ms = max(0.0, (started - self._bbo_updated_at.get(parent.request.swap_inst_id, started)) * 1000)
         request = OrderRequest(
             inst_id=parent.request.swap_inst_id,
             side="buy" if buy else "sell",
@@ -142,6 +149,9 @@ class PairExecutor:
             reduce_only=parent.request.action.value == "close",
         )
         ack = await self.exchange.place_order(request)
+        metrics = self._efficiency.get(parent.request.request_id)
+        if metrics is not None:
+            metrics.maker_submitted(child.child_id, (time.perf_counter() - started) * 1000, quote_age_ms, reprice)
         child.perp_order_id = ack.ord_id
         child.perp_cl_ord_id = ack.cl_ord_id
         child.state = ChildState.MAKER_WORKING
@@ -151,6 +161,9 @@ class PairExecutor:
 
     async def on_book(self, inst_id: str, best_bid: Decimal, best_ask: Decimal) -> None:
         self._latest_bbo[inst_id] = (best_bid, best_ask)
+        self._bbo_updated_at[inst_id] = time.perf_counter()
+        for metrics in self._efficiency.values():
+            metrics.record_bbo()
         for tracker in self._market_spreads.values():
             tracker.update(inst_id, best_bid, best_ask)
         for parent in self.parents.values():
@@ -291,7 +304,7 @@ class PairExecutor:
             remaining = child.perp_target_contracts - child.perp_filled_contracts
             child.perp_target_contracts = remaining
             child.active_order_filled_contracts = Decimal("0")
-            await self._place_maker(parent, child, rules)
+            await self._place_maker(parent, child, rules, reprice=True)
         self._persist()
 
     async def on_order_event(self, event: FillEvent) -> None:
@@ -320,6 +333,9 @@ class PairExecutor:
         delta = event.acc_fill_sz - previous
         if delta > 0:
             child.perp_filled_contracts += delta
+            metrics = self._efficiency.get(parent.request.request_id)
+            if metrics is not None:
+                metrics.maker_filled(child.child_id)
             delta_base = delta * child.contract_value
             child.pending_hedge_base_qty += delta_base
             child.spot_target_base_qty += delta_base
@@ -345,7 +361,7 @@ class PairExecutor:
         if index + 1 < len(parent.children):
             rules = await self.exchange.instrument_rules(parent.request.swap_inst_id)
             next_child = parent.children[index + 1]
-            await self._place_maker(parent, next_child, rules)
+            await self._place_maker(parent, next_child, rules, reprice=False)
             await self._notify(parent, next_child, "CHILD_STARTED")
         elif parent.exposure.copy_abs() <= parent.request.hedge_tolerance_base_qty:
             parent.state = ParentOrderState.COMPLETED
@@ -384,14 +400,20 @@ class PairExecutor:
                     cl_ord_id=compact_client_id(f"{child.child_id}H{child.hedge_attempts:03d}"),
                     slippage_bps=parent.request.max_spot_slippage_bps,
                 )
+                hedge_started = time.perf_counter()
                 try:
+                    ack_started = time.perf_counter()
                     ack = await self.exchange.place_order(request)
+                    ack_ms = (time.perf_counter() - ack_started) * 1000
                     child.spot_order_ids.append(ack.ord_id)
                     result = await self.exchange.get_order(request.inst_id, ack.ord_id, ack.cl_ord_id)
                     filled = result.acc_fill_sz
                     child.spot_filled_base_qty += filled
                     child.pending_hedge_base_qty -= filled
                     child.last_spot_fill_px = result.fill_px
+                    metrics = self._efficiency.get(parent.request.request_id)
+                    if metrics is not None:
+                        metrics.hedge_submitted(float(qty), ack_ms, (time.perf_counter() - hedge_started) * 1000, float(filled))
                 except Exception as exc:
                     if child.hedge_attempts >= parent.request.max_hedge_retries:
                         child.state = ChildState.RECOVERY
@@ -432,6 +454,9 @@ class PairExecutor:
                 actual = Decimal(execution.get("effective_spread_rate_pct", "0"))
                 market_exec = Decimal(market.get("executable_twap_rate_pct", "0"))
                 execution["execution_vs_market_executable_rate_pct"] = str(actual - market_exec)
+            metrics = self._efficiency.get(parent.request.request_id)
+            if metrics is not None:
+                execution["efficiency"] = metrics.snapshot()
         payload = report_payload(parent, child, execution)
         if hasattr(self.notifier, "send_report"):
             await self.notifier.send_report(reason, payload)
