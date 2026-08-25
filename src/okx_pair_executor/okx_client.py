@@ -194,7 +194,7 @@ class OkxV5Client:
     async def _place_order_ws(self, request: OrderRequest) -> OrderAck:
         payload: dict[str, Any] = {
             "instId": request.inst_id,
-            "tdMode": "cross",
+            "tdMode": request.td_mode,
             "side": request.side,
             "ordType": request.ord_type,
             "sz": str(request.size),
@@ -247,7 +247,7 @@ class OkxV5Client:
     async def _place_order_rest(self, request: OrderRequest) -> OrderAck:
         payload: dict[str, Any] = {
             "instId": request.inst_id,
-            "tdMode": "cross",
+            "tdMode": request.td_mode,
             "side": request.side,
             "ordType": request.ord_type,
             "sz": str(request.size),
@@ -407,6 +407,7 @@ class OkxV5Client:
             qty = Decimal("0")
             notional = Decimal("0")
             fees: dict[str, Decimal] = {}
+            realized_pnl = Decimal("0")
             for multiplier, row in rows:
                 size = Decimal(row.get("fillSz") or "0") * multiplier
                 price = Decimal(row.get("fillPx") or "0")
@@ -415,10 +416,12 @@ class OkxV5Client:
                 fee_ccy = row.get("feeCcy") or row.get("fillFeeCcy") or "UNKNOWN"
                 fee = Decimal(row.get("fee") or row.get("fillFee") or "0")
                 fees[fee_ccy] = fees.get(fee_ccy, Decimal("0")) + fee
+                realized_pnl += Decimal(row.get("fillPnl") or "0")
             legs[leg] = {
                 "filled_base_qty": str(qty),
                 "avg_price": str(notional / qty if qty else Decimal("0")),
                 "fees": {ccy: str(value) for ccy, value in fees.items()},
+                "realized_pnl": str(realized_pnl),
                 "fill_count": len(rows),
             }
 
@@ -445,6 +448,12 @@ class OkxV5Client:
             fee = Decimal(row.get("fee") or row.get("fillFee") or "0")
             if fee_ccy:
                 expected_balances[fee_ccy] = expected_balances.get(fee_ccy, Decimal("0")) + fee
+            if kind == "perp":
+                # fillPnl is reported in the swap settlement currency. For
+                # the supported linear USDT swaps this is the spot quote ccy.
+                fill_pnl = Decimal(row.get("fillPnl") or "0")
+                if fill_pnl:
+                    expected_balances[quote_ccy] = expected_balances.get(quote_ccy, Decimal("0")) + fill_pnl
             if kind == "spot":
                 size = size_raw * multiplier
                 expected_balances[base_ccy] = expected_balances.get(base_ccy, Decimal("0")) + sign * size
@@ -468,7 +477,7 @@ class OkxV5Client:
         balance_difference = {
             key: str(balance_delta_raw.get(key, Decimal("0")) - expected_balances.get(key, Decimal("0")))
             for key in sorted(set(balance_delta_raw) | set(expected_balances))
-            if balance_delta_raw.get(key, Decimal("0")) != expected_balances.get(key, Decimal("0"))
+            if (balance_delta_raw.get(key, Decimal("0")) - expected_balances.get(key, Decimal("0"))).copy_abs() > Decimal("1e-8")
         }
         position_before = {k: Decimal(v) for k, v in before.get("positions", {}).items()}
         position_after = {k: Decimal(v) for k, v in after.get("positions", {}).items()}

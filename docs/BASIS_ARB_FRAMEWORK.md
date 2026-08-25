@@ -107,6 +107,8 @@ Parent 和 Child 仍由 `PairExecutor` 管理。策略层只决定是否允许�
 
 ```env
 STRATEGY_MODE=basis
+SPOT_TD_MODE=cross
+MAX_MAKER_ATTEMPTS=50
 BASIS_ENTRY_THRESHOLD_BP=10
 BASIS_PAUSE_THRESHOLD_BP=5
 BASIS_RESUME_THRESHOLD_BP=8
@@ -115,7 +117,7 @@ BASIS_RESUME_EXPOSURE_BASE_QTY=0.005
 BASIS_SIGNAL_INTERVAL_MS=50
 ```
 
-现阶段执行器在永续成交后默认立即对冲，这是更安全的默认行为。后续如需严格复刻旧算法的“敞口达到阈值才开始 IOC”，再增加 `HEDGE_TRIGGER_BASE_QTY`，但必须保留最大敞口和 Basis 消失时的强制对冲。
+现货腿通过 `SPOT_TD_MODE` 显式选择 `cross`、`isolated` 或 `cash`；`cross` 用于 Cross Margin Buy。现阶段执行器在永续成交后默认立即对冲，这是更安全的默认行为。Maker 未成交时按剩余量重挂，超过 `MAX_MAKER_ATTEMPTS` 才进入 Recovery。后续如需严格复刻旧算法的“敞口达到阈值才开始 IOC”，再增加 `HEDGE_TRIGGER_BASE_QTY`，但必须保留最大敞口和 Basis 消失时的强制对冲。
 
 ## 6. 事件与命令契约
 

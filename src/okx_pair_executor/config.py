@@ -28,6 +28,7 @@ class AppConfig:
     spot_inst_id: str
     swap_inst_id: str
     strategy_mode: str
+    spot_td_mode: str
     direction: Direction
     action: OrderAction
     target_base_qty: Decimal
@@ -35,6 +36,7 @@ class AppConfig:
     max_spot_slippage_bps: Decimal
     max_unhedged_base_qty: Decimal
     max_hedge_retries: int
+    max_maker_attempts: int
     maker_reprice_interval_ms: int
     basis_entry_threshold_bp: Decimal
     basis_pause_threshold_bp: Decimal
@@ -56,6 +58,7 @@ class AppConfig:
             spot_inst_id=os.getenv("SPOT_INST_ID", "BTC-USDT"),
             swap_inst_id=os.getenv("SWAP_INST_ID", "BTC-USDT-SWAP"),
             strategy_mode=os.getenv("STRATEGY_MODE", "pair"),
+            spot_td_mode=os.getenv("SPOT_TD_MODE", "cross"),
             direction=Direction(os.getenv("ARB_DIRECTION", Direction.SHORT_SPOT_LONG_SWAP.value)),
             action=OrderAction(os.getenv("ARB_ACTION", OrderAction.OPEN.value)),
             target_base_qty=Decimal(env("TARGET_BASE_QTY")),
@@ -63,6 +66,7 @@ class AppConfig:
             max_spot_slippage_bps=Decimal(os.getenv("MAX_SPOT_SLIPPAGE_BPS", "10")),
             max_unhedged_base_qty=Decimal(os.getenv("MAX_UNHEDGED_BASE_QTY", "0.01")),
             max_hedge_retries=int(os.getenv("MAX_HEDGE_RETRIES", "3")),
+            max_maker_attempts=int(os.getenv("MAX_MAKER_ATTEMPTS", "50")),
             maker_reprice_interval_ms=int(os.getenv("MAKER_REPRICE_INTERVAL_MS", "150")),
             basis_entry_threshold_bp=Decimal(os.getenv("BASIS_ENTRY_THRESHOLD_BP", "10")),
             basis_pause_threshold_bp=Decimal(os.getenv("BASIS_PAUSE_THRESHOLD_BP", "5")),
@@ -90,6 +94,7 @@ class AppConfig:
             request_id=request_id,
             direction=self.direction,
             action=self.action,
+            spot_td_mode=self.spot_td_mode,
             spot_inst_id=self.spot_inst_id,
             swap_inst_id=self.swap_inst_id,
             target_base_qty=self.target_base_qty,
@@ -97,6 +102,7 @@ class AppConfig:
             max_spot_slippage_bps=self.max_spot_slippage_bps,
             max_unhedged_base_qty=self.max_unhedged_base_qty,
             max_hedge_retries=self.max_hedge_retries,
+            max_maker_attempts=self.max_maker_attempts,
             maker_reprice_interval_ms=self.maker_reprice_interval_ms,
             lark_report=bool(self.lark_webhook_url),
         )

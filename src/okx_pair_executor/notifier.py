@@ -62,6 +62,7 @@ class LarkNotifier:
                 f"**方向**：{payload.get('direction', '-')}",
                 f"**成交数量**：合约 {perp.get('filled_base_qty', '0')} / 现货 {spot.get('filled_base_qty', '0')}",
                 f"**成交均价**：合约 {_short_decimal(perp.get('avg_price', '0'))} / 现货 {_short_decimal(spot.get('avg_price', '0'))}",
+                f"**已实现盈亏**：合约 {_short_decimal(perp.get('realized_pnl', '0'))} / 现货 {_short_decimal(spot.get('realized_pnl', '0'))}",
                 f"**成交价差率**：{_short_decimal(execution.get('effective_spread_rate_pct', execution.get('spread_rate_pct', '0')), 4)}%",
                 f"**市场报价 TWAP**：{_short_decimal(execution.get('market_spread', {}).get('quote_twap_rate_pct', '0'), 4)}%",
                 f"**市场可执行 TWAP**：{_short_decimal(execution.get('market_spread', {}).get('executable_twap_rate_pct', '0'), 4)}%",
@@ -100,6 +101,7 @@ class LarkNotifier:
                 f"**子单**：{child.get('child_id', '-')}",
                 f"**成交数量**：合约 {perp.get('filled_base_qty', child.get('perp_filled_base_qty', '0'))} / 现货 {spot.get('filled_base_qty', child.get('spot_filled_base_qty', '0'))}",
                 f"**成交均价**：合约 {_short_decimal(perp.get('avg_price', '0'))} / 现货 {_short_decimal(spot.get('avg_price', '0'))}",
+                f"**已实现盈亏**：合约 {_short_decimal(perp.get('realized_pnl', '0'))} / 现货 {_short_decimal(spot.get('realized_pnl', '0'))}",
                 f"**成交价差率**：{_short_decimal(execution.get('effective_spread_rate_pct', execution.get('spread_rate_pct', '0')), 4)}%",
                 f"**市场报价 TWAP**：{_short_decimal(execution.get('market_spread', {}).get('quote_twap_rate_pct', '0'), 4)}%",
                 f"**市场可执行 TWAP**：{_short_decimal(execution.get('market_spread', {}).get('executable_twap_rate_pct', '0'), 4)}%",
@@ -117,13 +119,14 @@ class LarkNotifier:
                 f"**动作/方向**：{payload.get('action', '-')} / {payload.get('direction', '-')}",
                 f"**目标数量**：{params.get('target_base_qty', '-')}",
                 f"**单批数量**：{params.get('child_base_qty', '-')}",
+                f"**现货交易模式**：{params.get('spot_td_mode', 'cross')}",
                 f"**当前子单**：{child.get('child_id', '-')}，目标 {child.get('target_base_qty', '-')}",
                 f"**合约张数**：{child.get('perp_target_contracts', '-')}",
                 f"**Maker 价格**：{child.get('maker_price', '-')}",
                 f"**最大敞口**：{params.get('max_unhedged_base_qty', '-')}",
                 f"**改单间隔**：{params.get('maker_reprice_interval_ms', '-')}ms",
             ]
-        elif reason in {"HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED", "REPRICE_FAILED"}:
+        elif reason in {"HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED", "REPRICE_FAILED", "TARGET_INCOMPLETE", "MAKER_RETRY_EXHAUSTED"}:
             template, icon, title = "red", "🚨", "RISK_ALERT"
             fields = [
                 f"**任务**：{payload.get('request_id', '-')}",

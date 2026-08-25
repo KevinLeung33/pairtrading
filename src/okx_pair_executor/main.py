@@ -97,12 +97,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the OKX pair executor")
     parser.add_argument("--request-id", default=None)
     parser.add_argument("--strategy-mode", choices=["pair", "basis"])
+    parser.add_argument("--spot-td-mode", choices=["cash", "cross", "isolated"])
     parser.add_argument("--direction", choices=[item.value for item in Direction])
     parser.add_argument("--action", choices=[item.value for item in OrderAction])
     parser.add_argument("--target-base-qty", type=Decimal)
     parser.add_argument("--child-base-qty", type=Decimal)
     parser.add_argument("--max-unhedged-base-qty", type=Decimal)
     parser.add_argument("--max-hedge-retries", type=int)
+    parser.add_argument("--max-maker-attempts", type=int)
     parser.add_argument("--maker-reprice-interval-ms", type=int)
     parser.add_argument("--basis-entry-threshold-bp", type=Decimal)
     parser.add_argument("--basis-pause-threshold-bp", type=Decimal)
@@ -117,6 +119,8 @@ def main() -> None:
     overrides = {}
     if args.strategy_mode is not None:
         overrides["strategy_mode"] = args.strategy_mode
+    if args.spot_td_mode is not None:
+        overrides["spot_td_mode"] = args.spot_td_mode
     if args.direction is not None:
         overrides["direction"] = Direction(args.direction)
     if args.action is not None:
@@ -129,6 +133,8 @@ def main() -> None:
         overrides["max_unhedged_base_qty"] = args.max_unhedged_base_qty
     if args.max_hedge_retries is not None:
         overrides["max_hedge_retries"] = args.max_hedge_retries
+    if args.max_maker_attempts is not None:
+        overrides["max_maker_attempts"] = args.max_maker_attempts
     if args.maker_reprice_interval_ms is not None:
         overrides["maker_reprice_interval_ms"] = args.maker_reprice_interval_ms
     if args.basis_entry_threshold_bp is not None:
@@ -149,6 +155,8 @@ def main() -> None:
         config = replace(config, **overrides)
     if config.strategy_mode not in {"pair", "basis"}:
         raise SystemExit("STRATEGY_MODE must be pair or basis")
+    if config.spot_td_mode not in {"cash", "cross", "isolated"}:
+        raise SystemExit("SPOT_TD_MODE must be cash, cross or isolated")
     if not config.demo and not args.allow_live:
         raise SystemExit("live trading blocked: set OKX_DEMO=0 and pass --allow-live explicitly")
     request_id = args.request_id or datetime.now(timezone.utc).strftime("ARB-%Y%m%d-%H%M%S")

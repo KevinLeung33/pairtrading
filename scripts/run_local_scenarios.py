@@ -577,10 +577,19 @@ async def maker_cancel_after_partial_fill() -> str:
         child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
         "canceled", Decimal("4"),
     ))
-    assert child.state.value == "partial_completed"
+    assert child.state.value == "maker_working"
+    assert parent.state.value == "running"
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id,
+        child.perp_cl_ord_id,
+        "BTC-USDT-SWAP",
+        "filled",
+        child.perp_target_contracts,
+    ))
     assert parent.state.value == "completed"
     assert parent.exposure == Decimal("0")
-    return "partially filled Maker cancellation completed without residual exposure"
+    assert parent.filled_base_qty == Decimal("0.1")
+    return "partially filled Maker cancellation requeued the residual and completed the child"
 
 
 async def zero_fill_cancel() -> str:
@@ -592,10 +601,18 @@ async def zero_fill_cancel() -> str:
         child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP",
         "canceled", Decimal("0"),
     ))
-    assert child.state.value == "partial_completed"
-    assert parent.state.value == "completed"
+    assert child.state.value == "maker_working"
+    assert parent.state.value == "running"
     assert not [item for item in exchange.requests if item.ord_type == "ioc"]
-    return "zero-fill Maker cancellation did not create a hedge order"
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id,
+        child.perp_cl_ord_id,
+        "BTC-USDT-SWAP",
+        "filled",
+        child.perp_target_contracts,
+    ))
+    assert parent.state.value == "completed"
+    return "zero-fill Maker cancellation requeued the child instead of falsely completing the parent"
 
 
 async def sell_side_bbo_reprice() -> str:
@@ -740,6 +757,57 @@ async def one_btc_many_children() -> str:
     return "1 BTC opened through 20 small children with zero final exposure"
 
 
+async def spot_margin_mode() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "spot-margin-mode",
+        spot_td_mode="cross",
+    ))
+    child = parent.children[0]
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id,
+        child.perp_cl_ord_id,
+        "BTC-USDT-SWAP",
+        "filled",
+        child.perp_target_contracts,
+    ))
+    spot_requests = [request for request in exchange.requests if request.inst_id == "BTC-USDT"]
+    assert spot_requests and all(request.td_mode == "cross" for request in spot_requests)
+    return "Spot IOC hedge carried tdMode=cross for Cross Margin Buy"
+
+
+async def incomplete_final_child() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request(
+        "incomplete-final",
+        target_base_qty=Decimal("1"),
+        child_base_qty=Decimal("0.1"),
+        max_maker_attempts=1,
+    ))
+    for child in parent.children[:-1]:
+        await executor.on_order_event(FillEvent(
+            child.perp_order_id,
+            child.perp_cl_ord_id,
+            "BTC-USDT-SWAP",
+            "filled",
+            child.perp_target_contracts,
+        ))
+    final_child = parent.children[-1]
+    await executor.on_order_event(FillEvent(
+        final_child.perp_order_id,
+        final_child.perp_cl_ord_id,
+        "BTC-USDT-SWAP",
+        "canceled",
+        Decimal("0"),
+    ))
+    assert parent.filled_base_qty == Decimal("0.9")
+    assert parent.state.value == "recovery"
+    assert parent.error and "Maker retry limit reached" in parent.error
+    return "0.9/1 BTC entered recovery after the configured Maker retry limit instead of false completion"
+
+
 async def run() -> list[ScenarioResult]:
     scenarios = [
         ("full_fill", full_fill),
@@ -776,6 +844,8 @@ async def run() -> list[ScenarioResult]:
         ("merge_small_tail_child", merge_small_tail_child),
         ("invalid_contract_quantity", invalid_contract_quantity),
         ("one_btc_many_children", one_btc_many_children),
+        ("spot_margin_mode", spot_margin_mode),
+        ("incomplete_final_child", incomplete_final_child),
     ]
     results = []
     for name, function in scenarios:

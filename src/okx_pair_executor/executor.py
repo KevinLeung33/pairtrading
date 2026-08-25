@@ -156,6 +156,7 @@ class PairExecutor:
             price=await self.exchange.maker_price(parent.request.swap_inst_id, "buy" if buy else "sell"),
             cl_ord_id=cl_ord_id,
             reduce_only=parent.request.action.value == "close",
+            td_mode="cross",
         )
         ack = await self.exchange.place_order(request)
         metrics = self._efficiency.get(parent.request.request_id)
@@ -527,14 +528,42 @@ class PairExecutor:
 
     async def _advance_parent(self, parent: ParentOrder, child: ChildOrder) -> None:
         index = parent.children.index(child)
+        if child.perp_filled_contracts < child.perp_target_contracts:
+            if child.maker_attempts >= parent.request.max_maker_attempts:
+                parent.state = ParentOrderState.RECOVERY
+                parent.error = (
+                    f"Maker retry limit reached for {child.child_id}; "
+                    f"filled {child.perp_filled_contracts} of {child.perp_target_contracts} contracts"
+                )
+                await self._notify(parent, child, "MAKER_RETRY_EXHAUSTED")
+                self._persist()
+                return
+            rules = await self.exchange.instrument_rules(parent.request.swap_inst_id)
+            remaining = child.perp_target_contracts - child.perp_filled_contracts
+            child.perp_target_contracts = remaining
+            child.active_order_filled_contracts = Decimal("0")
+            child.pending_hedge_base_qty = Decimal("0")
+            child.state = ChildState.CREATED
+            await self._place_maker(parent, child, rules, reprice=True)
+            await self._notify(parent, child, "CHILD_STARTED")
+            self._persist()
+            return
         if index + 1 < len(parent.children):
             rules = await self.exchange.instrument_rules(parent.request.swap_inst_id)
             next_child = parent.children[index + 1]
             await self._place_maker(parent, next_child, rules, reprice=False)
             await self._notify(parent, next_child, "CHILD_STARTED")
         elif parent.exposure.copy_abs() <= parent.request.hedge_tolerance_base_qty:
-            parent.state = ParentOrderState.COMPLETED
-            await self._notify(parent, child, "PARENT_COMPLETED")
+            if parent.filled_base_qty >= parent.request.target_base_qty:
+                parent.state = ParentOrderState.COMPLETED
+                await self._notify(parent, child, "PARENT_COMPLETED")
+            else:
+                parent.state = ParentOrderState.RECOVERY
+                parent.error = (
+                    f"target incomplete: filled {parent.filled_base_qty} "
+                    f"of {parent.request.target_base_qty}"
+                )
+                await self._notify(parent, child, "TARGET_INCOMPLETE")
         self._persist()
 
     async def _hedge_pending(self, parent: ParentOrder, child: ChildOrder) -> None:
@@ -568,6 +597,7 @@ class PairExecutor:
                     price=await self.exchange.ioc_price(parent.request.spot_inst_id, "buy" if buy else "sell", parent.request.max_spot_slippage_bps),
                     cl_ord_id=compact_client_id(f"{child.child_id}H{child.hedge_attempts:03d}"),
                     slippage_bps=parent.request.max_spot_slippage_bps,
+                    td_mode=parent.request.spot_td_mode,
                 )
                 hedge_started = time.perf_counter()
                 try:

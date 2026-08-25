@@ -55,10 +55,12 @@ class ParentOrderRequest:
     target_base_qty: Decimal
     child_base_qty: Decimal
     action: OrderAction = OrderAction.OPEN
+    spot_td_mode: str = "cross"
     max_spot_slippage_bps: Decimal = Decimal("10")
     max_unhedged_base_qty: Decimal = Decimal("0.01")
     hedge_tolerance_base_qty: Decimal = Decimal("0")
     max_hedge_retries: int = 3
+    max_maker_attempts: int = 50
     maker_reprice_interval_ms: int = 150
     lark_report: bool = True
     account_before: dict[str, Any] = field(default_factory=dict)
@@ -138,6 +140,7 @@ class OrderRequest:
     cl_ord_id: str
     reduce_only: bool = False
     slippage_bps: Decimal | None = None
+    td_mode: str = "cross"
 
 
 @dataclass(frozen=True)
@@ -163,6 +166,8 @@ def report_payload(
         "parameters": {
             "target_base_qty": str(parent.request.target_base_qty),
             "child_base_qty": str(parent.request.child_base_qty),
+            "spot_td_mode": parent.request.spot_td_mode,
+            "max_maker_attempts": parent.request.max_maker_attempts,
             "max_unhedged_base_qty": str(parent.request.max_unhedged_base_qty),
             "maker_reprice_interval_ms": parent.request.maker_reprice_interval_ms,
         },
