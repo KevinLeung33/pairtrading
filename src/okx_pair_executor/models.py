@@ -73,6 +73,8 @@ class FillEvent:
     fill_px: Decimal = Decimal("0")
     fee: Decimal = Decimal("0")
     trade_id: str = ""
+    order_price: Decimal = Decimal("0")
+    amend_result: str = ""
 
 
 @dataclass

@@ -34,6 +34,8 @@ class ScenarioExchange:
         self.maker_ask = Decimal("65000")
         self.cancel_count = 0
         self.cancel_race_fill = False
+        self.get_order_count = 0
+        self.reconcile_count = 0
 
     async def instrument_rules(self, inst_id):
         if inst_id.endswith("SWAP"):
@@ -70,14 +72,26 @@ class ScenarioExchange:
             self.orders[ord_id].state = "canceled"
 
     async def get_order(self, inst_id, ord_id, cl_ord_id):
+        self.get_order_count += 1
         return self.orders[ord_id]
 
     async def subscribe_orders(self, handler):
         return None
 
     async def reconcile(self, inst_ids):
+        self.reconcile_count += 1
         return list(self.orders.values())
 
+
+class AmendScenarioExchange(ScenarioExchange):
+    def __init__(self):
+        super().__init__()
+        self.amend_count = 0
+
+    async def amend_order(self, inst_id, ord_id, cl_ord_id, new_price):
+        self.amend_count += 1
+        self.maker_bid = new_price
+        return OrderAck(ord_id, cl_ord_id, "live")
 
 def make_request(name: str, **kwargs) -> ParentOrderRequest:
     values = {
@@ -164,6 +178,50 @@ async def reprice_and_duplicate() -> str:
     assert child.perp_filled_contracts == Decimal("10")
     assert child.spot_filled_base_qty == Decimal("0.1")
     return "duplicate fill ignored and reprice preserved total fill"
+
+
+async def atomic_amend() -> str:
+    exchange = AmendScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("atomic-amend"))
+    child = parent.children[0]
+    old_order = child.perp_order_id
+    exchange.maker_bid = Decimal("64999.9")
+    await executor.reprice_child(child.child_id)
+    assert exchange.amend_count == 1
+    assert exchange.cancel_count == 0
+    assert child.perp_order_id == old_order
+    assert child.maker_price == Decimal("64999.9")
+    return "Maker repriced through atomic amend without cancel-and-replace"
+
+async def amend_failure_recovery() -> str:
+    exchange = AmendScenarioExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(make_request("amend-failure"))
+    child = parent.children[0]
+    exchange.maker_bid = Decimal("64999.9")
+    await executor.reprice_child(child.child_id)
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP", "live",
+        Decimal("0"), order_price=Decimal("65000"), amend_result="51400",
+    ))
+    assert child.state.value == "maker_working"
+    assert child.maker_price == Decimal("65000")
+    exchange.maker_bid = Decimal("64999.8")
+    await executor.reprice_child(child.child_id)
+    assert exchange.amend_count == 2
+    return "failed amend restored the actual quote and allowed a retry"
+
+
+async def reconcile_active_order() -> str:
+    exchange = ScenarioExchange()
+    executor = PairExecutor(exchange)
+    await executor.submit(make_request("reconcile-active"))
+    events = await executor.reconcile()
+    assert len(events) == 1
+    assert exchange.get_order_count == 1
+    assert exchange.reconcile_count == 0
+    return "REST safety check queried the known active order, not orders-history"
 
 
 async def reprice_cancel_race_fill() -> str:
@@ -613,9 +671,12 @@ async def run() -> list[ScenarioResult]:
         ("partial_ioc", partial_ioc),
         ("exposure_limit", exposure_limit),
         ("reprice_and_duplicate", reprice_and_duplicate),
+        ("atomic_amend", atomic_amend),
         ("persistence", persistence),
         ("bbo_reprice_debounce", bbo_reprice_debounce),
         ("reprice_cancel_race_fill", reprice_cancel_race_fill),
+        ("reconcile_active_order", reconcile_active_order),
+        ("amend_failure_recovery", amend_failure_recovery),
         ("parameter_matrix", parameter_matrix),
         ("duplicate_recovery_event", duplicate_recovery_event),
         ("out_of_order_fill", out_of_order_fill),

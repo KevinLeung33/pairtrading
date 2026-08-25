@@ -24,6 +24,7 @@ class ExecutionEfficiency:
     bbo_events: int = 0
     maker_reprices: int = 0
     maker_ack_latencies: list[float] = field(default_factory=list)
+    maker_amend_latencies: list[float] = field(default_factory=list)
     maker_quote_ages: list[float] = field(default_factory=list)
     maker_waits: list[float] = field(default_factory=list)
     hedge_ack_latencies: list[float] = field(default_factory=list)
@@ -42,6 +43,11 @@ class ExecutionEfficiency:
         if reprice:
             self.maker_reprices += 1
 
+    def maker_amended(self, latency_ms: float, quote_age_ms: float) -> None:
+        self.maker_amend_latencies.append(latency_ms)
+        self.maker_quote_ages.append(quote_age_ms)
+        self.maker_reprices += 1
+
     def maker_filled(self, child_id: str) -> None:
         started = self.maker_started_at.pop(child_id, None)
         if started is not None:
@@ -57,9 +63,12 @@ class ExecutionEfficiency:
         maker_ack = _summary(self.maker_ack_latencies)
         maker_quote_age = _summary(self.maker_quote_ages)
         hedge_ack = _summary(self.hedge_ack_latencies)
+        maker_amend = _summary(self.maker_amend_latencies)
         warnings: list[str] = []
         if maker_ack["p95_ms"] > 500:
             warnings.append("maker_ack_slow")
+        if maker_amend["p95_ms"] > 500:
+            warnings.append("maker_amend_slow")
         if maker_quote_age["p95_ms"] > 500:
             warnings.append("maker_quote_stale")
         if hedge_ack["p95_ms"] > 500:
@@ -73,6 +82,7 @@ class ExecutionEfficiency:
             "maker_reprices": self.maker_reprices,
             "maker_ack_latency": maker_ack,
             "maker_quote_age": maker_quote_age,
+            "maker_amend_latency": maker_amend,
             "maker_time_to_fill": _summary(self.maker_waits),
             "hedge_ack_latency": hedge_ack,
             "hedge_roundtrip": _summary(self.hedge_roundtrips),

@@ -66,6 +66,7 @@ async def run(config: AppConfig, request_id: str) -> None:
         for task in (book_task, order_task):
             task.cancel()
         await asyncio.gather(book_task, order_task, return_exceptions=True)
+        await client.close()
 
 
 def main() -> None:

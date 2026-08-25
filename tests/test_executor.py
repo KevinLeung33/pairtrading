@@ -157,3 +157,61 @@ async def test_bbo_reprice_is_debounced():
     assert exchange.cancel_count == 1
     assert child.maker_price == Decimal("64999.9")
     await executor.stop_repricing()
+
+class AmendExchange(FakeExchange):
+    def __init__(self):
+        super().__init__()
+        self.amend_count = 0
+
+    async def amend_order(self, inst_id, ord_id, cl_ord_id, new_price):
+        self.amend_count += 1
+        self.maker_bid = new_price
+        return OrderAck(ord_id, cl_ord_id, "live")
+
+
+@pytest.mark.asyncio
+async def test_reprice_uses_atomic_amend_when_supported():
+    exchange = AmendExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(ParentOrderRequest(
+        request_id="P-AMEND",
+        direction=Direction.SHORT_SPOT_LONG_SWAP,
+        spot_inst_id="BTC-USDT",
+        swap_inst_id="BTC-USDT-SWAP",
+        target_base_qty=Decimal("0.1"),
+        child_base_qty=Decimal("0.1"),
+    ))
+    child = parent.children[0]
+    old_order = child.perp_order_id
+    exchange.maker_bid = Decimal("64999.9")
+    await executor.reprice_child(child.child_id)
+    assert exchange.amend_count == 1
+    assert exchange.cancel_count == 0
+    assert child.perp_order_id == old_order
+    assert child.maker_price == Decimal("64999.9")
+
+
+@pytest.mark.asyncio
+async def test_failed_amend_result_restores_quote_for_retry():
+    exchange = AmendExchange()
+    executor = PairExecutor(exchange)
+    parent = await executor.submit(ParentOrderRequest(
+        request_id="P-AMEND-FAIL",
+        direction=Direction.SHORT_SPOT_LONG_SWAP,
+        spot_inst_id="BTC-USDT",
+        swap_inst_id="BTC-USDT-SWAP",
+        target_base_qty=Decimal("0.1"),
+        child_base_qty=Decimal("0.1"),
+    ))
+    child = parent.children[0]
+    exchange.maker_bid = Decimal("64999.9")
+    await executor.reprice_child(child.child_id)
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP", "live",
+        Decimal("0"), order_price=Decimal("65000"), amend_result="51400",
+    ))
+    assert child.maker_price == Decimal("65000")
+    assert child.state.value == "maker_working"
+    exchange.maker_bid = Decimal("64999.8")
+    await executor.reprice_child(child.child_id)
+    assert exchange.amend_count == 2

@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import time
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -43,6 +44,11 @@ class OkxV5Client:
         self._book: dict[str, dict[str, Decimal]] = {}
         self._known_order_ids: set[str] = set()
         self._rules: dict[str, InstrumentRules] = {}
+        self._trade_ws: Any | None = None
+        self._trade_ws_reader: asyncio.Task[None] | None = None
+        self._trade_ws_lock = asyncio.Lock()
+        self._trade_ws_pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._trade_ws_seq = 0
 
     def update_orderbook(self, inst_id: str, *, best_bid: Decimal, best_ask: Decimal) -> None:
         self._book[inst_id] = {"best_bid": best_bid, "best_ask": best_ask}
@@ -122,7 +128,123 @@ class OkxV5Client:
             contract_value=Decimal(row.get("ctVal") or "1"),
         )
 
+    async def _ensure_trade_ws(self) -> Any:
+        if self._trade_ws is not None and not getattr(self._trade_ws, "closed", False):
+            return self._trade_ws
+        ws = await websockets.connect(self.ws_url, ping_interval=20, ping_timeout=10)
+        timestamp = str(int(time.time()))
+        sign = self._sign(timestamp, "GET", "/users/self/verify")
+        await ws.send(json.dumps({"op": "login", "args": [{
+            "apiKey": self.api_key,
+            "passphrase": self.passphrase,
+            "timestamp": timestamp,
+            "sign": sign,
+        }]}))
+        login = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        if login.get("code") != "0":
+            await ws.close()
+            raise RuntimeError(f"OKX trade WS login failed: {login}")
+        self._trade_ws = ws
+        self._trade_ws_reader = asyncio.create_task(
+            self._read_trade_ws(ws),
+            name="okx-private-trade-reader",
+        )
+        return ws
+
+    async def _read_trade_ws(self, ws: Any) -> None:
+        try:
+            async for raw in ws:
+                message = json.loads(raw)
+                request_id = str(message.get("id", ""))
+                future = self._trade_ws_pending.get(request_id)
+                if future is not None and not future.done():
+                    future.set_result(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            for future in self._trade_ws_pending.values():
+                if not future.done():
+                    future.set_exception(exc)
+        finally:
+            if self._trade_ws is ws:
+                self._trade_ws = None
+
+    async def _trade_ws_request(self, op: str, args: list[dict[str, Any]]) -> dict[str, Any]:
+        async with self._trade_ws_lock:
+            ws = await self._ensure_trade_ws()
+            self._trade_ws_seq += 1
+            request_id = str(self._trade_ws_seq)
+            future = asyncio.get_running_loop().create_future()
+            self._trade_ws_pending[request_id] = future
+            try:
+                await ws.send(json.dumps({"id": request_id, "op": op, "args": args}, separators=(",", ":")))
+                return await asyncio.wait_for(future, timeout=5)
+            finally:
+                self._trade_ws_pending.pop(request_id, None)
+
+    @staticmethod
+    def _check_trade_ws_response(message: dict[str, Any]) -> dict[str, Any]:
+        if message.get("code") != "0":
+            raise RuntimeError(f"OKX trade WS error: {message}")
+        row = (message.get("data") or [{}])[0]
+        if row.get("sCode") != "0":
+            raise RuntimeError(f"OKX trade WS order error: {row}")
+        return row
+
+    async def _place_order_ws(self, request: OrderRequest) -> OrderAck:
+        payload: dict[str, Any] = {
+            "instId": request.inst_id,
+            "tdMode": "cross",
+            "side": request.side,
+            "ordType": request.ord_type,
+            "sz": str(request.size),
+            "clOrdId": request.cl_ord_id,
+        }
+        if request.price is not None:
+            payload["px"] = str(request.price)
+        if request.reduce_only:
+            payload["reduceOnly"] = "true"
+        if request.slippage_bps is not None:
+            payload["slippagePct"] = str(request.slippage_bps / Decimal("10000"))
+        row = self._check_trade_ws_response(await self._trade_ws_request("order", [payload]))
+        self._known_order_ids.add(row["ordId"])
+        return OrderAck(row["ordId"], row.get("clOrdId", request.cl_ord_id), "live")
+
+    async def _amend_order_ws(self, inst_id: str, ord_id: str, cl_ord_id: str, new_price: Decimal) -> OrderAck:
+        payload = {
+            "instId": inst_id,
+            "ordId": ord_id,
+            "clOrdId": cl_ord_id,
+            "newPx": str(new_price),
+            "cxlOnFail": False,
+        }
+        row = self._check_trade_ws_response(await self._trade_ws_request("amend-order", [payload]))
+        return OrderAck(row.get("ordId", ord_id), row.get("clOrdId", cl_ord_id), "live")
+
+    async def _cancel_order_ws(self, inst_id: str, ord_id: str, cl_ord_id: str) -> None:
+        row = self._check_trade_ws_response(await self._trade_ws_request("cancel-order", [{
+            "instId": inst_id,
+            "ordId": ord_id,
+            "clOrdId": cl_ord_id,
+        }]))
+        if row.get("ordId") != ord_id:
+            raise RuntimeError(f"OKX cancel response order mismatch: {row}")
+
     async def place_order(self, request: OrderRequest) -> OrderAck:
+        if os.getenv("OKX_TRADE_WS", "1").lower() not in {"0", "false", "no"}:
+            try:
+                return await self._place_order_ws(request)
+            except Exception as ws_exc:
+                existing = await self._find_order_by_client_id(request.inst_id, request.cl_ord_id)
+                if existing is not None:
+                    self._known_order_ids.add(existing["ordId"])
+                    return OrderAck(existing["ordId"], existing.get("clOrdId", request.cl_ord_id), existing.get("state", "live"))
+                try:
+                    return await self._place_order_rest(request)
+                except Exception as rest_exc:
+                    raise RuntimeError(f"trade WS and REST order submission failed: ws={ws_exc}; rest={rest_exc}") from rest_exc
+        return await self._place_order_rest(request)
+    async def _place_order_rest(self, request: OrderRequest) -> OrderAck:
         payload: dict[str, Any] = {
             "instId": request.inst_id,
             "tdMode": "cross",
@@ -158,6 +280,36 @@ class OkxV5Client:
         self._known_order_ids.add(row["ordId"])
         return OrderAck(row["ordId"], row.get("clOrdId", request.cl_ord_id), "live")
 
+    async def amend_order(self, inst_id: str, ord_id: str, cl_ord_id: str, new_price: Decimal) -> OrderAck:
+        if os.getenv("OKX_TRADE_WS", "1").lower() not in {"0", "false", "no"}:
+            try:
+                return await self._amend_order_ws(inst_id, ord_id, cl_ord_id, new_price)
+            except Exception as ws_exc:
+                try:
+                    result = await self._request("POST", "/api/v5/trade/amend-order", {
+                        "instId": inst_id,
+                        "ordId": ord_id,
+                        "clOrdId": cl_ord_id,
+                        "newPx": str(new_price),
+                        "cxlOnFail": False,
+                    })
+                    row = result["data"][0]
+                    if row.get("sCode") != "0":
+                        raise RuntimeError(f"OKX amend rejected: {row}")
+                    return OrderAck(row.get("ordId", ord_id), row.get("clOrdId", cl_ord_id), "live")
+                except Exception as rest_exc:
+                    raise RuntimeError(f"trade WS and REST amend failed: ws={ws_exc}; rest={rest_exc}") from rest_exc
+        result = await self._request("POST", "/api/v5/trade/amend-order", {
+            "instId": inst_id,
+            "ordId": ord_id,
+            "clOrdId": cl_ord_id,
+            "newPx": str(new_price),
+            "cxlOnFail": False,
+        })
+        row = result["data"][0]
+        if row.get("sCode") != "0":
+            raise RuntimeError(f"OKX amend rejected: {row}")
+        return OrderAck(row.get("ordId", ord_id), row.get("clOrdId", cl_ord_id), "live")
     async def _find_order_by_client_id(self, inst_id: str, cl_ord_id: str) -> dict[str, Any] | None:
         try:
             result = await self._request(
@@ -169,9 +321,21 @@ class OkxV5Client:
         rows = result.get("data") or []
         return rows[0] if rows else None
 
-    async def cancel_order(self, inst_id: str, ord_id: str, cl_ord_id: str) -> None:
+    async def _cancel_order_rest(self, inst_id: str, ord_id: str, cl_ord_id: str) -> None:
         await self._request("POST", "/api/v5/trade/cancel-order", {"instId": inst_id, "ordId": ord_id, "clOrdId": cl_ord_id})
 
+    async def cancel_order(self, inst_id: str, ord_id: str, cl_ord_id: str) -> None:
+        if os.getenv("OKX_TRADE_WS", "1").lower() not in {"0", "false", "no"}:
+            try:
+                await self._cancel_order_ws(inst_id, ord_id, cl_ord_id)
+                return
+            except Exception as ws_exc:
+                try:
+                    await self._cancel_order_rest(inst_id, ord_id, cl_ord_id)
+                    return
+                except Exception as rest_exc:
+                    raise RuntimeError(f"trade WS and REST cancel failed: ws={ws_exc}; rest={rest_exc}") from rest_exc
+        await self._cancel_order_rest(inst_id, ord_id, cl_ord_id)
     async def get_order(self, inst_id: str, ord_id: str, cl_ord_id: str) -> FillEvent:
         result = await self._request("GET", f"/api/v5/trade/order?instId={inst_id}&ordId={ord_id}")
         return self._fill_event(result["data"][0])
@@ -346,19 +510,6 @@ class OkxV5Client:
             }
         return details
 
-    async def reconcile(self, inst_ids: list[str]) -> list[FillEvent]:
-        events: list[FillEvent] = []
-        seen: set[str] = set()
-        for inst_id in inst_ids:
-            inst_type = "SWAP" if inst_id.endswith("-SWAP") else "SPOT"
-            for endpoint in ("orders-pending", "orders-history"):
-                result = await self._request("GET", f"/api/v5/trade/{endpoint}?instType={inst_type}&instId={inst_id}&limit=100")
-                for row in result["data"]:
-                    if row["ordId"] not in seen:
-                        seen.add(row["ordId"])
-                        events.append(self._fill_event(row))
-        return events
-
     async def subscribe_orders(self, handler: FillHandler) -> None:
         async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=10) as ws:
             timestamp = str(int(time.time()))
@@ -374,6 +525,20 @@ class OkxV5Client:
                 for row in message.get("data", []):
                     await handler(self._fill_event(row))
 
+    async def close(self) -> None:
+        reader = self._trade_ws_reader
+        self._trade_ws_reader = None
+        ws = self._trade_ws
+        self._trade_ws = None
+        if ws is not None:
+            await ws.close()
+        if reader is not None:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        for future in self._trade_ws_pending.values():
+            if not future.done():
+                future.set_exception(RuntimeError("trade WebSocket closed"))
+        self._trade_ws_pending.clear()
     @staticmethod
     def _fill_event(row: dict[str, Any]) -> FillEvent:
         return FillEvent(
@@ -381,4 +546,5 @@ class OkxV5Client:
             state=row.get("state", ""), acc_fill_sz=Decimal(row.get("accFillSz") or "0"),
             fill_px=Decimal(row.get("fillPx") or row.get("avgPx") or "0"),
             fee=Decimal(row.get("fee") or "0"), trade_id=row.get("tradeId", ""),
+            order_price=Decimal(row.get("px") or "0"), amend_result=row.get("amendResult", ""),
         )

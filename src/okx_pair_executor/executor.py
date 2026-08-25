@@ -60,7 +60,12 @@ class PairExecutor:
         for parent in self.parents.values():
             for child in parent.children:
                 self._hedge_locks[child.child_id] = asyncio.Lock()
-                if child.perp_order_id:
+                if child.perp_order_id and child.state in {
+                    ChildState.MAKER_WORKING,
+                    ChildState.REPRICING,
+                    ChildState.HEDGE_PENDING,
+                    ChildState.HEDGE_EXECUTING,
+                }:
                     self._children_by_order[child.perp_order_id] = child
         return self.parents
 
@@ -268,6 +273,50 @@ class PairExecutor:
             return
         child.state = ChildState.REPRICING
         old_order_id = child.perp_order_id
+        if hasattr(self.exchange, "amend_order"):
+            amend_started = time.perf_counter()
+            try:
+                target = await self.exchange.maker_price(
+                    parent.request.swap_inst_id,
+                    "buy" if (
+                        parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
+                        and parent.request.action.value != "close"
+                    ) or (
+                        parent.request.direction is Direction.LONG_SPOT_SHORT_SWAP
+                        and parent.request.action.value == "close"
+                    ) else "sell",
+                )
+                quote_age_ms = max(
+                    0.0,
+                    (amend_started - self._bbo_updated_at.get(
+                        parent.request.swap_inst_id,
+                        amend_started,
+                    )) * 1000,
+                )
+                await self.exchange.amend_order(
+                    parent.request.swap_inst_id,
+                    old_order_id,
+                    child.perp_cl_ord_id or "",
+                    target,
+                )
+                metrics = self._efficiency.get(parent.request.request_id)
+                if metrics is not None:
+                    metrics.maker_amended(
+                        (time.perf_counter() - amend_started) * 1000,
+                        quote_age_ms,
+                    )
+                # A fill can arrive while amend-order is in flight. In that
+                # case the order event owns the state transition; do not
+                # overwrite HEDGE_* or terminal state with MAKER_WORKING.
+                if child.state is ChildState.REPRICING:
+                    child.maker_price = target
+                    child.state = ChildState.MAKER_WORKING
+                self._persist()
+                return
+            except Exception:
+                # An amend can race with a fill or cancellation. Fall back to
+                # the proven cancel-and-replace path after resolving the order.
+                pass
         try:
             await self.exchange.cancel_order(
                 parent.request.swap_inst_id,
@@ -348,6 +397,15 @@ class PairExecutor:
                 self._persist()
                 return
 
+        if event.amend_result:
+            if event.order_price:
+                child.maker_price = event.order_price
+            elif event.amend_result != "0":
+                # A failed amendment leaves the original order unchanged.
+                # Make the next BBO event eligible to retry the amendment.
+                child.maker_price = Decimal("0")
+            if child.state is ChildState.REPRICING:
+                child.state = ChildState.MAKER_WORKING
         if event.state in {"filled", "canceled"} and child.state is not ChildState.REPRICING:
             if child.unhedged_base_qty.copy_abs() > parent.request.max_unhedged_base_qty:
                 child.state = ChildState.RECOVERY
@@ -357,6 +415,13 @@ class PairExecutor:
                 child.state = ChildState.COMPLETED if event.state == "filled" else ChildState.PARTIAL_COMPLETED
                 await self._notify(parent, child, "CHILD_TERMINAL")
                 await self._advance_parent(parent, child)
+        if child.state in {
+            ChildState.COMPLETED,
+            ChildState.PARTIAL_COMPLETED,
+            ChildState.RECOVERY,
+            ChildState.FAILED,
+        }:
+            self._children_by_order.pop(event.ord_id, None)
         self._persist()
 
     async def _advance_parent(self, parent: ParentOrder, child: ChildOrder) -> None:
@@ -483,9 +548,30 @@ class PairExecutor:
             await self.notifier.send(f"{reason}\n{payload}")
 
     async def reconcile(self) -> list[FillEvent]:
-        events = await self.exchange.reconcile(
-            list({self.parents_for_child(c).request.swap_inst_id for c in self._children_by_order.values()})
-        )
+        # The private WebSocket orders channel is the primary source of order
+        # state. REST is only a safety check for currently active known orders;
+        # querying orders-history on every loop is both redundant and rate-limit
+        # intensive.
+        events: list[FillEvent] = []
+        for order_id, child in list(self._children_by_order.items()):
+            if child.state not in {
+                ChildState.MAKER_WORKING,
+                ChildState.REPRICING,
+                ChildState.HEDGE_PENDING,
+                ChildState.HEDGE_EXECUTING,
+            }:
+                self._children_by_order.pop(order_id, None)
+                continue
+            parent = self.parents_for_child(child)
+            try:
+                event = await self.exchange.get_order(
+                    parent.request.swap_inst_id,
+                    order_id,
+                    child.perp_cl_ord_id or "",
+                )
+            except Exception:
+                continue
+            events.append(event)
         for event in events:
             await self.on_order_event(event)
         self._persist()
