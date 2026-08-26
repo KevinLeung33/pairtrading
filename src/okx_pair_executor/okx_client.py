@@ -44,6 +44,7 @@ class OkxV5Client:
         self._book: dict[str, dict[str, Decimal]] = {}
         self._known_order_ids: set[str] = set()
         self._rules: dict[str, InstrumentRules] = {}
+        self._inst_id_codes: dict[str, int] = {}
         self._trade_ws: Any | None = None
         self._trade_ws_reader: asyncio.Task[None] | None = None
         self._trade_ws_lock = asyncio.Lock()
@@ -121,12 +122,29 @@ class OkxV5Client:
         inst_type = "SWAP" if inst_id.endswith("-SWAP") else "SPOT"
         result = await self._request("GET", f"/api/v5/account/instruments?instType={inst_type}")
         row = next(item for item in result["data"] if item["instId"] == inst_id)
-        return InstrumentRules(
+        raw_inst_id_code = row.get("instIdCode")
+        inst_id_code = int(raw_inst_id_code) if raw_inst_id_code not in (None, "") else None
+        if inst_id_code is not None:
+            self._inst_id_codes[inst_id] = inst_id_code
+        rules = InstrumentRules(
             tick_size=Decimal(row["tickSz"]),
             lot_size=Decimal(row["lotSz"]),
             min_size=Decimal(row["minSz"]),
             contract_value=Decimal(row.get("ctVal") or "1"),
+            inst_id_code=inst_id_code,
         )
+        self._rules[inst_id] = rules
+        return rules
+
+    async def _inst_id_code(self, inst_id: str) -> int:
+        code = self._inst_id_codes.get(inst_id)
+        if code is None:
+            rules = await self.instrument_rules(inst_id)
+            code = rules.inst_id_code
+        if code is None:
+            raise RuntimeError(f"OKX instruments response has no instIdCode for {inst_id}")
+        self._inst_id_codes[inst_id] = code
+        return code
 
     async def _ensure_trade_ws(self) -> Any:
         if self._trade_ws is not None and not getattr(self._trade_ws, "closed", False):
@@ -193,7 +211,7 @@ class OkxV5Client:
 
     async def _place_order_ws(self, request: OrderRequest) -> OrderAck:
         payload: dict[str, Any] = {
-            "instId": request.inst_id,
+            "instIdCode": await self._inst_id_code(request.inst_id),
             "tdMode": request.td_mode,
             "side": request.side,
             "ordType": request.ord_type,
@@ -212,7 +230,7 @@ class OkxV5Client:
 
     async def _amend_order_ws(self, inst_id: str, ord_id: str, cl_ord_id: str, new_price: Decimal) -> OrderAck:
         payload = {
-            "instId": inst_id,
+            "instIdCode": await self._inst_id_code(inst_id),
             "ordId": ord_id,
             "clOrdId": cl_ord_id,
             "newPx": str(new_price),
@@ -223,7 +241,7 @@ class OkxV5Client:
 
     async def _cancel_order_ws(self, inst_id: str, ord_id: str, cl_ord_id: str) -> None:
         row = self._check_trade_ws_response(await self._trade_ws_request("cancel-order", [{
-            "instId": inst_id,
+            "instIdCode": await self._inst_id_code(inst_id),
             "ordId": ord_id,
             "clOrdId": cl_ord_id,
         }]))

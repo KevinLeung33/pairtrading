@@ -44,6 +44,7 @@ class InstrumentRules:
     lot_size: Decimal
     min_size: Decimal
     contract_value: Decimal = Decimal("1")
+    inst_id_code: int | None = None
 
 
 @dataclass(frozen=True)
