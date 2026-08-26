@@ -52,6 +52,7 @@ class PairExecutor:
         self._reprice_tasks: dict[str, asyncio.Task[None]] = {}
         self._market_spreads: dict[str, MarketSpreadTracker] = {}
         self._terminal_report_sent: set[str] = set()
+        self._runtime_warnings: dict[str, str] = {}
 
     def restore(self) -> dict[str, ParentOrder]:
         if not self.store:
@@ -137,7 +138,14 @@ class PairExecutor:
         if remaining > 0:
             raise ValueError(f"target quantity leaves unrepresentable remainder: {remaining}")
         self.parents[request.request_id] = parent
-        await self._place_maker(parent, parent.children[0], swap_rules, reprice=False)
+        try:
+            await self._place_maker(parent, parent.children[0], swap_rules, reprice=False)
+        except Exception as exc:
+            parent.state = ParentOrderState.RECOVERY
+            parent.error = f"Maker submission failed: {exc}"
+            self._persist()
+            await self._notify(parent, parent.children[0], "EXECUTION_RISK")
+            return parent
         self._persist()
         await self._notify(parent, parent.children[0], "ORDER_STARTED")
         return parent
@@ -540,20 +548,34 @@ class PairExecutor:
                 await self._notify(parent, child, "MAKER_RETRY_EXHAUSTED")
                 self._persist()
                 return
-            rules = await self.exchange.instrument_rules(parent.request.swap_inst_id)
             remaining = child.perp_target_contracts - child.perp_filled_contracts
             child.perp_target_contracts = remaining
             child.active_order_filled_contracts = Decimal("0")
             child.pending_hedge_base_qty = Decimal("0")
             child.state = ChildState.CREATED
-            await self._place_maker(parent, child, rules, reprice=True)
+            try:
+                rules = await self.exchange.instrument_rules(parent.request.swap_inst_id)
+                await self._place_maker(parent, child, rules, reprice=True)
+            except Exception as exc:
+                parent.state = ParentOrderState.RECOVERY
+                parent.error = f"Maker submission failed while requeueing {child.child_id}: {exc}"
+                await self._notify(parent, child, "EXECUTION_RISK")
+                self._persist()
+                return
             await self._notify(parent, child, "CHILD_STARTED")
             self._persist()
             return
         if index + 1 < len(parent.children):
-            rules = await self.exchange.instrument_rules(parent.request.swap_inst_id)
             next_child = parent.children[index + 1]
-            await self._place_maker(parent, next_child, rules, reprice=False)
+            try:
+                rules = await self.exchange.instrument_rules(parent.request.swap_inst_id)
+                await self._place_maker(parent, next_child, rules, reprice=False)
+            except Exception as exc:
+                parent.state = ParentOrderState.RECOVERY
+                parent.error = f"Maker submission failed for {next_child.child_id}: {exc}"
+                await self._notify(parent, next_child, "EXECUTION_RISK")
+                self._persist()
+                return
             await self._notify(parent, next_child, "CHILD_STARTED")
         elif parent.exposure.copy_abs() <= parent.request.hedge_tolerance_base_qty:
             if parent.filled_base_qty >= parent.request.target_base_qty:
@@ -612,10 +634,15 @@ class PairExecutor:
                     child.spot_filled_base_qty += filled
                     child.pending_hedge_base_qty -= filled
                     child.last_spot_fill_px = result.fill_px
+                    self.clear_runtime_warning(parent.request.request_id)
                     metrics = self._efficiency.get(parent.request.request_id)
                     if metrics is not None:
                         metrics.hedge_submitted(float(qty), ack_ms, (time.perf_counter() - hedge_started) * 1000, float(filled))
                 except Exception as exc:
+                    await self.notify_runtime_warning(
+                        parent.request.request_id,
+                        f"Spot hedge order error (attempt {child.hedge_attempts}): {exc}",
+                    )
                     if child.hedge_attempts >= parent.request.max_hedge_retries:
                         child.state = ChildState.RECOVERY
                         parent.state = ParentOrderState.RECOVERY
@@ -633,6 +660,56 @@ class PairExecutor:
                     self._persist()
                     return
 
+    async def notify_runtime_warning(self, request_id: str, message: str) -> None:
+        """Report a recoverable transport/order issue without stopping execution."""
+        parent = self.parents.get(request_id)
+        if parent is None or parent.state in {
+            ParentOrderState.COMPLETED,
+            ParentOrderState.FAILED,
+            ParentOrderState.CANCELED,
+            ParentOrderState.RECOVERY,
+        }:
+            return
+        if self._runtime_warnings.get(request_id) == message:
+            return
+        self._runtime_warnings[request_id] = message
+        parent.error = message
+        self._persist()
+        await self._notify(parent, None, "EXECUTION_WARNING")
+
+    def clear_runtime_warning(self, request_id: str) -> None:
+        self._runtime_warnings.pop(request_id, None)
+        parent = self.parents.get(request_id)
+        if parent is not None and parent.state is ParentOrderState.RUNNING:
+            parent.error = None
+    async def fail_orphaned_parent(self, request_id: str) -> bool:
+        """Stop a restored RUNNING parent that has no known active order.
+
+        Re-submitting here would be unsafe because the exchange may have an
+        order that was not persisted locally. Manual reconciliation is safer.
+        """
+        parent = self.parents.get(request_id)
+        if parent is None or parent.state is not ParentOrderState.RUNNING:
+            return False
+        active_states = {
+            ChildState.MAKER_WORKING,
+            ChildState.REPRICING,
+            ChildState.HEDGE_PENDING,
+            ChildState.HEDGE_EXECUTING,
+        }
+        if any(
+            child.state in active_states and child.perp_order_id
+            for child in parent.children
+        ):
+            return False
+        parent.state = ParentOrderState.RECOVERY
+        parent.error = (
+            "restored running parent has no known active order; "
+            "manual exchange reconciliation required"
+        )
+        self._persist()
+        await self._notify(parent, None, "EXECUTION_RISK")
+        return True
     async def notify_status(self, request_id: str) -> None:
         """Send a task-level progress snapshot for a non-terminal parent."""
         parent = self.parents.get(request_id)
@@ -758,7 +835,11 @@ class PairExecutor:
                     order_id,
                     child.perp_cl_ord_id or "",
                 )
-            except Exception:
+            except Exception as exc:
+                await self.notify_runtime_warning(
+                    parent.request.request_id,
+                    f"Maker REST核对失败: {exc}",
+                )
                 continue
             events.append(event)
         for event in events:

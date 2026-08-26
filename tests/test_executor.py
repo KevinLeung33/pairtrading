@@ -5,6 +5,7 @@ import pytest
 from okx_pair_executor.executor import PairExecutor
 from okx_pair_executor.persistence import JsonStateStore
 from okx_pair_executor.models import (
+    ChildState,
     Direction,
     FillEvent,
     InstrumentRules,
@@ -259,3 +260,68 @@ async def test_task_notifications_hide_child_events_and_final_is_once():
 
     await executor.notify_terminal(request.request_id)
     assert [reason for reason, _ in notifier.reports].count("PARENT_COMPLETED") == 1
+
+
+class RejectSecondMakerExchange(FakeExchange):
+    def __init__(self):
+        super().__init__()
+        self.maker_submissions = 0
+
+    async def place_order(self, request: OrderRequest):
+        if request.ord_type == "post_only":
+            self.maker_submissions += 1
+            if self.maker_submissions == 2:
+                raise RuntimeError("max leverage reached")
+        return await super().place_order(request)
+
+
+@pytest.mark.asyncio
+async def test_next_maker_rejection_enters_recovery_and_is_reported():
+    exchange = RejectSecondMakerExchange()
+    notifier = CaptureNotifier()
+    executor = PairExecutor(exchange, notifier=notifier)
+    request = ParentOrderRequest(
+        request_id="P-MAKER-REJECT",
+        direction=Direction.LONG_SPOT_SHORT_SWAP,
+        spot_inst_id="BTC-USDT",
+        swap_inst_id="BTC-USDT-SWAP",
+        target_base_qty=Decimal("0.2"),
+        child_base_qty=Decimal("0.1"),
+    )
+
+    parent = await executor.submit(request)
+    first = parent.children[0]
+    await executor.on_order_event(FillEvent(
+        first.perp_order_id,
+        first.perp_cl_ord_id,
+        "BTC-USDT-SWAP",
+        "filled",
+        Decimal("10"),
+    ))
+
+    assert parent.state.value == "recovery"
+    assert "max leverage reached" in (parent.error or "")
+    assert [reason for reason, _ in notifier.reports].count("EXECUTION_RISK") == 1
+@pytest.mark.asyncio
+async def test_restored_running_parent_without_active_order_enters_recovery():
+    exchange = FakeExchange()
+    notifier = CaptureNotifier()
+    executor = PairExecutor(exchange, notifier=notifier)
+    request = ParentOrderRequest(
+        request_id="P-ORPHAN",
+        direction=Direction.SHORT_SPOT_LONG_SWAP,
+        spot_inst_id="BTC-USDT",
+        swap_inst_id="BTC-USDT-SWAP",
+        target_base_qty=Decimal("0.1"),
+        child_base_qty=Decimal("0.1"),
+    )
+    parent = await executor.submit(request)
+    child = parent.children[0]
+    executor._children_by_order.clear()
+    child.perp_order_id = None
+    child.state = ChildState.CREATED
+
+    assert await executor.fail_orphaned_parent(request.request_id) is True
+    assert parent.state.value == "recovery"
+    assert "manual exchange reconciliation required" in (parent.error or "")
+    assert [reason for reason, _ in notifier.reports].count("EXECUTION_RISK") == 1

@@ -172,6 +172,21 @@ def report_payload(
             "maker_reprice_interval_ms": parent.request.maker_reprice_interval_ms,
         },
     }
+    active_states = {
+        ChildState.CREATED,
+        ChildState.MAKER_WORKING,
+        ChildState.REPRICING,
+        ChildState.HEDGE_PENDING,
+        ChildState.HEDGE_EXECUTING,
+    }
+    active_child = next((item for item in parent.children if item.state in active_states), None)
+    data["execution_state"] = {
+        "phase": active_child.state.value if active_child is not None else parent.state.value,
+        "remaining_base_qty": str(max(parent.request.target_base_qty - parent.filled_base_qty, Decimal("0"))),
+        "maker_order_id": active_child.perp_order_id if active_child is not None else None,
+        "maker_price": str(active_child.maker_price) if active_child is not None else None,
+        "maker_attempts": active_child.maker_attempts if active_child is not None else 0,
+    }
     if parent.error:
         data["error"] = parent.error
     if execution:

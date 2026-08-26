@@ -67,3 +67,32 @@ async def test_started_card_uses_execution_started_title():
     })
 
     assert sent[0]["card"]["header"]["title"]["content"] == "▶️ EXECUTION_STARTED"
+@pytest.mark.asyncio
+async def test_warning_card_contains_recent_error_and_execution_context():
+    notifier = LarkNotifier("https://example.invalid/hook")
+    sent = []
+
+    async def capture(payload):
+        sent.append(payload)
+
+    notifier._post = capture
+    await notifier.send_report("EXECUTION_WARNING", {
+        "request_id": "P-WARN",
+        "parent_state": "running",
+        "direction": "long_spot_short_swap",
+        "action": "open",
+        "error": "max leverage reached",
+        "execution_state": {
+            "phase": "maker_working",
+            "remaining_base_qty": "0.3",
+            "maker_order_id": "123",
+            "maker_price": "79000",
+            "maker_attempts": 2,
+        },
+    })
+
+    content = sent[0]["card"]["elements"][0]["text"]["content"]
+    assert sent[0]["card"]["header"]["title"]["content"] == "⚠️ EXECUTION_WARNING"
+    assert "max leverage reached" in content
+    assert "剩余目标" in content
+    assert "当前 Maker" in content

@@ -88,6 +88,7 @@ class LarkNotifier:
         maker_fill = efficiency.get("maker_time_to_fill", {}) or {}
         hedge_ack = efficiency.get("hedge_ack_latency", {}) or {}
         fees = f"合约 {_format_map(perp.get('fees', {}))}；现货 {_format_map(spot.get('fees', {}))}"
+        context = payload.get("execution_state", {}) or {}
         common = [
             f"**任务**：{payload.get('request_id', '-')}\n",
             f"**状态**：{payload.get('parent_state', '-')}\n",
@@ -117,11 +118,25 @@ class LarkNotifier:
         elif reason == "EXECUTION_STATUS":
             template, icon, title = "blue", "⏳", "EXECUTION_STATUS"
             common.extend([
-                f"**对冲次数**：{sum(int(item.get('hedge_attempts', 0)) for item in payload.get('children', []) if isinstance(item, dict)) or '-'}",
+                f"**执行阶段**：{context.get('phase', payload.get('parent_state', '-'))}",
+                f"**剩余目标**：{context.get('remaining_base_qty', '-')}",
+                f"**当前 Maker**：{context.get('maker_order_id') or '无'} @ {context.get('maker_price') or 'N/A'}",
+                f"**Maker 尝试**：{context.get('maker_attempts', '-')}",
                 f"**手续费**：{fees}",
             ])
+            if payload.get("error"):
+                common.append(f"**最近异常**：{payload['error']}")
             if execution.get("report_error"):
                 common.append(f"**状态数据**：{execution['report_error']}")
+        elif reason == "EXECUTION_WARNING":
+            template, icon, title = "yellow", "⚠️", "EXECUTION_WARNING"
+            common.extend([
+                f"**执行阶段**：{context.get('phase', payload.get('parent_state', '-'))}",
+                f"**剩余目标**：{context.get('remaining_base_qty', '-')}",
+                f"**当前 Maker**：{context.get('maker_order_id') or '无'} @ {context.get('maker_price') or 'N/A'}",
+                f"**告警**：{payload.get('error', reason)}",
+                f"**手续费**：{fees}",
+            ])
         elif reason == "ORDER_STARTED":
             template, icon, title = "blue", "▶️", "EXECUTION_STARTED"
             params = payload.get("parameters", {})

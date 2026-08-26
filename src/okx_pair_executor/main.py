@@ -40,10 +40,56 @@ async def run(config: AppConfig, request_id: str) -> None:
         await executor.on_book(inst_id, best_bid, best_ask)
 
     book_stream = OkxBookStream([config.spot_inst_id, config.swap_inst_id], on_book, demo=config.demo)
-    book_task = asyncio.create_task(book_stream.run(), name="okx-public-books")
-    order_task = asyncio.create_task(client.subscribe_orders(executor.on_order_event), name="okx-private-orders")
-
     stop_event = asyncio.Event()
+
+    async def public_book_stream_loop() -> None:
+        backoff = 1.0
+        while not stop_event.is_set():
+            try:
+                await book_stream.run()
+                if stop_event.is_set():
+                    return
+                message = "public book WebSocket closed unexpectedly"
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                message = f"public book WebSocket/callback error: {exc}"
+                logging.exception("public book stream failed for %s", request_id)
+            await executor.notify_runtime_warning(request_id, message)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=backoff)
+                return
+            except asyncio.TimeoutError:
+                backoff = min(backoff * 2, 30.0)
+
+    book_task = asyncio.create_task(
+        public_book_stream_loop(),
+        name="okx-public-books",
+    )
+
+    async def private_order_stream_loop() -> None:
+        backoff = 1.0
+        while not stop_event.is_set():
+            try:
+                await client.subscribe_orders(executor.on_order_event)
+                if stop_event.is_set():
+                    return
+                message = "private order WebSocket closed unexpectedly"
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                message = f"private order WebSocket/order callback error: {exc}"
+                logging.exception("private order stream failed for %s", request_id)
+            await executor.notify_runtime_warning(request_id, message)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=backoff)
+                return
+            except asyncio.TimeoutError:
+                backoff = min(backoff * 2, 30.0)
+    order_task = asyncio.create_task(
+        private_order_stream_loop(),
+        name="okx-private-orders",
+    )
 
     async def status_report_loop() -> None:
         interval = max(1, config.status_report_interval_seconds)
@@ -97,6 +143,7 @@ async def run(config: AppConfig, request_id: str) -> None:
                 logging.info("submitted %s with %d children", request_id, len(parent.children))
             else:
                 logging.info("restored %s with %d children in state %s", request_id, len(parent.children), parent.state.value)
+                await executor.fail_orphaned_parent(request_id)
             while not stop_event.is_set() and parent.state.value not in {"completed", "failed", "canceled", "recovery"}:
                 await asyncio.sleep(5)
                 await executor.reconcile()
