@@ -2,7 +2,14 @@ from decimal import Decimal
 
 import pytest
 
-from okx_pair_executor.models import OrderRequest
+from okx_pair_executor.models import (
+    ChildOrder,
+    Direction,
+    OrderAction,
+    OrderRequest,
+    ParentOrder,
+    ParentOrderRequest,
+)
 from okx_pair_executor.okx_client import OkxV5Client
 
 
@@ -37,3 +44,46 @@ async def test_trade_ws_uses_inst_id_code_for_order_amend_and_cancel():
     assert [op for op, _ in calls] == ["order", "amend-order", "cancel-order"]
     assert all(args[0]["instIdCode"] == 123456 for _, args in calls)
     assert all("instId" not in args[0] for _, args in calls)
+@pytest.mark.asyncio
+async def test_execution_details_includes_all_repriced_maker_orders():
+    client = OkxV5Client("key", "secret", "passphrase", demo=True)
+    request = ParentOrderRequest(
+        request_id="P-FILLS",
+        direction=Direction.SHORT_SPOT_LONG_SWAP,
+        action=OrderAction.OPEN,
+        spot_inst_id="BTC-USDT",
+        swap_inst_id="BTC-USDT-SWAP",
+        target_base_qty=Decimal("0.2"),
+        child_base_qty=Decimal("0.1"),
+    )
+    child = ChildOrder(
+        child_id="P-FILLS-C0001",
+        target_base_qty=Decimal("0.2"),
+        perp_target_contracts=Decimal("20"),
+        contract_value=Decimal("0.01"),
+        perp_order_id="maker-new",
+        perp_order_ids=["maker-old", "maker-new"],
+        spot_order_ids=["spot-1"],
+    )
+    parent = ParentOrder(request=request, children=[child])
+    calls = []
+
+    async def fake_trade_fills(inst_id, ord_id):
+        calls.append((inst_id, ord_id))
+        if ord_id.startswith("maker"):
+            return [{"fillSz": "10", "fillPx": "79000", "fee": "-1", "feeCcy": "USDT", "side": "buy"}]
+        return [{"fillSz": "0.2", "fillPx": "79010", "fee": "-0.0002", "feeCcy": "BTC", "side": "sell"}]
+
+    client._trade_fills = fake_trade_fills
+    details = await client.execution_details(parent, include_account=False)
+
+    assert calls == [
+        ("BTC-USDT-SWAP", "maker-old"),
+        ("BTC-USDT-SWAP", "maker-new"),
+        ("BTC-USDT", "spot-1"),
+    ]
+    assert details["legs"]["perp"]["filled_base_qty"] == "0.20"
+    assert details["legs"]["spot"]["filled_base_qty"] == "0.2"
+    assert details["legs"]["perp"]["avg_price"] == "79000"
+    assert details["legs"]["spot"]["avg_price"] == "79010"
+    assert details["fill_data_available"] is True

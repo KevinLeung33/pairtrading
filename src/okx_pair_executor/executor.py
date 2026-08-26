@@ -173,6 +173,8 @@ class PairExecutor:
         if metrics is not None:
             metrics.maker_submitted(child.child_id, (time.perf_counter() - started) * 1000, quote_age_ms, reprice)
         child.perp_order_id = ack.ord_id
+        if ack.ord_id not in child.perp_order_ids:
+            child.perp_order_ids.append(ack.ord_id)
         child.perp_cl_ord_id = ack.cl_ord_id
         child.state = ChildState.MAKER_WORKING
         child.maker_price = request.price or Decimal("0")
@@ -762,6 +764,7 @@ class PairExecutor:
             legs = execution.setdefault("legs", {})
             perp_leg = legs.setdefault("perp", {})
             spot_leg = legs.setdefault("spot", {})
+            fill_data_available = execution.get("fill_data_available")
             perp_leg["filled_base_qty"] = str(parent.filled_base_qty)
             spot_leg["filled_base_qty"] = str(parent.hedged_base_qty)
             execution["state_progress"] = {
@@ -773,10 +776,12 @@ class PairExecutor:
             if tracker is not None:
                 market = tracker.snapshot()
                 execution["market_spread"] = market
-                if market.get("observations", 0):
+                if market.get("observations", 0) and fill_data_available is True:
                     actual = Decimal(execution.get("effective_spread_rate_pct", "0"))
                     market_exec = Decimal(market.get("executable_twap_rate_pct", "0"))
                     execution["execution_vs_market_executable_rate_pct"] = str(actual - market_exec)
+                elif market.get("observations", 0):
+                    execution["execution_vs_market_executable_rate_pct"] = "N/A"
             metrics = self._efficiency.get(request_id)
             if metrics is not None:
                 execution["efficiency"] = metrics.snapshot()

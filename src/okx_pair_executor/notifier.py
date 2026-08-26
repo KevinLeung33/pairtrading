@@ -81,7 +81,7 @@ class LarkNotifier:
         relative = execution.get("execution_vs_market_executable_rate_pct")
         relative_display = _short_decimal(relative, 4) if has_market_sample and relative not in (None, "") else "N/A"
         actual_spread = execution.get("effective_spread_rate_pct")
-        actual_display = _short_decimal(actual_spread, 4) if actual_spread not in (None, "", "0", "0.0") else "N/A"
+        actual_display = _short_decimal(actual_spread, 4) if execution.get("fill_data_available") is True and actual_spread not in (None, "") else "N/A"
         efficiency = execution.get("efficiency", {}) or {}
         maker_ack = efficiency.get("maker_ack_latency", {}) or {}
         amend = efficiency.get("maker_amend_latency", {}) or {}
@@ -115,6 +115,8 @@ class LarkNotifier:
             ])
             if reconciliation.get("status") == "CHECK_REQUIRED":
                 common.append(f"**差额**：余额 {reconciliation.get('balance_difference', {})}；仓位 {reconciliation.get('position_difference', {})}")
+            if execution.get("fill_data_available") is False:
+                common.append("**成交明细**：交易所成交明细暂未返回，价差/手续费待核对")
         elif reason == "EXECUTION_STATUS":
             template, icon, title = "blue", "⏳", "EXECUTION_STATUS"
             common.extend([

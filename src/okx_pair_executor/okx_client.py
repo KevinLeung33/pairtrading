@@ -385,11 +385,16 @@ class OkxV5Client:
         if not ord_id:
             return []
         inst_type = "SWAP" if inst_id.endswith("-SWAP") else "SPOT"
-        result = await self._request(
-            "GET",
-            f"/api/v5/trade/fills?instType={inst_type}&instId={inst_id}&ordId={ord_id}",
-        )
-        return result.get("data", [])
+        for attempt in range(3):
+            result = await self._request(
+                "GET",
+                f"/api/v5/trade/fills?instType={inst_type}&instId={inst_id}&ordId={ord_id}",
+            )
+            rows = result.get("data", [])
+            if rows or attempt == 2:
+                return rows
+            await asyncio.sleep(0.15 * (attempt + 1))
+        return []
 
     async def execution_details(
         self,
@@ -398,26 +403,28 @@ class OkxV5Client:
         include_account: bool = True,
     ) -> dict[str, Any]:
         fills: list[tuple[str, Decimal, dict[str, Any]]] = []
-        child_by_order: dict[str, Any] = {}
+        order_refs: list[tuple[str, str, ChildOrder]] = []
         selected_children = [child] if child is not None else parent.children
         for child in selected_children:
-            if child.perp_order_id:
-                child_by_order[child.perp_order_id] = child
+            perp_order_ids = list(child.perp_order_ids)
+            if child.perp_order_id and child.perp_order_id not in perp_order_ids:
+                # Backward-compatible with state files created before the
+                # all-Maker-order ledger was introduced.
+                perp_order_ids.append(child.perp_order_id)
+            for order_id in perp_order_ids:
+                order_refs.append(("perp", order_id, child))
             for order_id in child.spot_order_ids:
-                child_by_order[order_id] = child
+                order_refs.append(("spot", order_id, child))
 
-        for order_id, child in child_by_order.items():
+        for kind, order_id, child in order_refs:
             inst_id = (
                 parent.request.swap_inst_id
-                if order_id == child.perp_order_id
+                if kind == "perp"
                 else parent.request.spot_inst_id
             )
+            multiplier = child.contract_value if kind == "perp" else Decimal("1")
             for row in await self._trade_fills(inst_id, order_id):
-                fills.append((
-                    "perp" if inst_id == parent.request.swap_inst_id else "spot",
-                    child.contract_value if inst_id == parent.request.swap_inst_id else Decimal("1"),
-                    row,
-                ))
+                fills.append((kind, multiplier, row))
 
         legs: dict[str, dict[str, Any]] = {}
         for leg in ("perp", "spot"):
@@ -517,6 +524,7 @@ class OkxV5Client:
             status = "MATCHED" if not balance_difference and not position_difference else "CHECK_REQUIRED"
         details = {
             "legs": legs,
+            "fill_data_available": all(legs[leg]["fill_count"] > 0 for leg in ("perp", "spot")),
             "spread_rate_pct": str(spread),
             "effective_spread_rate_pct": str(effective_spread),
             "unhedged_base_qty": str(

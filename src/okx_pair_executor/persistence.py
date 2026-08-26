@@ -67,6 +67,7 @@ class JsonStateStore:
                     contract_value=Decimal(child_raw.get("contract_value", "1")),
                     state=ChildState(child_raw["state"]),
                     perp_order_id=child_raw.get("perp_order_id"),
+                    perp_order_ids=child_raw.get("perp_order_ids", []),
                     perp_cl_ord_id=child_raw.get("perp_cl_ord_id"),
                     perp_filled_contracts=Decimal(child_raw.get("perp_filled_contracts", "0")),
                     active_order_filled_contracts=Decimal(child_raw.get("active_order_filled_contracts", "0")),

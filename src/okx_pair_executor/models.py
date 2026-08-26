@@ -89,6 +89,7 @@ class ChildOrder:
     contract_value: Decimal = Decimal("1")
     state: ChildState = ChildState.CREATED
     perp_order_id: str | None = None
+    perp_order_ids: list[str] = field(default_factory=list)
     perp_cl_ord_id: str | None = None
     perp_filled_contracts: Decimal = Decimal("0")
     active_order_filled_contracts: Decimal = Decimal("0")
