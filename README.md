@@ -79,6 +79,8 @@ bash scripts/run_demo.sh --request-id DEMO-001
 
 后续分层架构、Basis 状态机、OMS 事件契约和迁移计划见 [BASIS_ARB_FRAMEWORK.md](docs/BASIS_ARB_FRAMEWORK.md)。
 
+完整操作说明见 [BASIS_USAGE.md](docs/BASIS_USAGE.md)。
+
 快速启用 Basis Demo：
 
 ```bash
