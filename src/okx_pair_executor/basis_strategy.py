@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from .models import (
@@ -35,6 +37,7 @@ class BasisStrategyConfig:
     exit_threshold_bp: Decimal = Decimal("0")
     resume_exposure_base_qty: Decimal = Decimal("0.005")
     signal_interval_ms: int = 50
+    control_path: str | None = None
 
 
 class BasisArbStrategy:
@@ -65,6 +68,8 @@ class BasisArbStrategy:
         self.last_decision_at = 0.0
         self._lock = asyncio.Lock()
         self._stopping = False
+        self._control_mtime_ns: int | None = None
+        self._last_control_check = 0.0
 
     @staticmethod
     def _state_from_parent(parent: ParentOrder | None) -> BasisStrategyState:
@@ -96,6 +101,65 @@ class BasisArbStrategy:
     def exposure(self) -> Decimal:
         return self.parent.exposure if self.parent is not None else Decimal("0")
 
+    def _reload_controls(self) -> bool:
+        """Apply an atomically-written runtime control file, if present."""
+        if not self.config.control_path:
+            return False
+        now = time.monotonic()
+        if (now - self._last_control_check) * 1000 < 250:
+            return False
+        self._last_control_check = now
+        path = Path(self.config.control_path)
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            return False
+        if self._control_mtime_ns == stat.st_mtime_ns:
+            return False
+        self._control_mtime_ns = stat.st_mtime_ns
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("control file must contain a JSON object")
+            aliases = {
+                "basis_entry_threshold_bp": "entry_threshold_bp",
+                "basis_pause_threshold_bp": "pause_threshold_bp",
+                "basis_resume_threshold_bp": "resume_threshold_bp",
+                "basis_exit_threshold_bp": "exit_threshold_bp",
+                "basis_resume_exposure_base_qty": "resume_exposure_base_qty",
+                "basis_signal_interval_ms": "signal_interval_ms",
+            }
+            updates: dict[str, Any] = {}
+            for key, value in raw.items():
+                target = aliases.get(key, key)
+                if target in {
+                    "entry_threshold_bp",
+                    "pause_threshold_bp",
+                    "resume_threshold_bp",
+                    "exit_threshold_bp",
+                    "resume_exposure_base_qty",
+                }:
+                    parsed = Decimal(str(value))
+                    if parsed < 0:
+                        raise ValueError(f"{key} must be non-negative")
+                    updates[target] = parsed
+                elif target == "signal_interval_ms":
+                    parsed_int = int(value)
+                    if parsed_int < 1:
+                        raise ValueError("signal_interval_ms must be positive")
+                    updates[target] = parsed_int
+            if not updates:
+                return False
+            self.config = replace(self.config, **updates)
+            logging.info(
+                "basis runtime controls updated for %s: %s",
+                self.request_id,
+                {key: str(value) for key, value in updates.items()},
+            )
+            return True
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            logging.error("invalid basis runtime controls %s: %s", path, exc)
+            return False
     def update_book(self, inst_id: str, best_bid: Decimal, best_ask: Decimal) -> None:
         self.books[inst_id] = (best_bid, best_ask)
 
@@ -148,6 +212,7 @@ class BasisArbStrategy:
 
     async def on_book(self, inst_id: str, best_bid: Decimal, best_ask: Decimal) -> None:
         self.update_book(inst_id, best_bid, best_ask)
+        self._reload_controls()
         basis = self.current_basis_bp()
         if basis is None:
             return
@@ -161,6 +226,7 @@ class BasisArbStrategy:
 
     async def refresh(self) -> None:
         async with self._lock:
+            self._reload_controls()
             if self.parent is None:
                 return
             if self.parent.state is ParentOrderState.COMPLETED:

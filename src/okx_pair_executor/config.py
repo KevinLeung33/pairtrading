@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -45,6 +46,7 @@ class AppConfig:
     basis_exit_threshold_bp: Decimal
     basis_resume_exposure_base_qty: Decimal
     basis_signal_interval_ms: int
+    basis_control_path: str | None
     state_path: str
     lark_webhook_url: str | None = None
     lark_secret: str | None = None
@@ -76,6 +78,7 @@ class AppConfig:
             basis_exit_threshold_bp=Decimal(os.getenv("BASIS_EXIT_THRESHOLD_BP", "0")),
             basis_resume_exposure_base_qty=Decimal(os.getenv("BASIS_RESUME_EXPOSURE_BASE_QTY", "0.005")),
             basis_signal_interval_ms=int(os.getenv("BASIS_SIGNAL_INTERVAL_MS", "50")),
+            basis_control_path=os.getenv("BASIS_CONTROL_PATH") or None,
             state_path=os.getenv("STATE_PATH", "runtime/state.json"),
             lark_webhook_url=os.getenv("LARK_WEBHOOK_URL"),
             lark_secret=os.getenv("LARK_SECRET"),
@@ -89,6 +92,7 @@ class AppConfig:
             exit_threshold_bp=self.basis_exit_threshold_bp,
             resume_exposure_base_qty=self.basis_resume_exposure_base_qty,
             signal_interval_ms=self.basis_signal_interval_ms,
+            control_path=self.basis_control_path or str(Path(self.state_path).with_suffix(".basis-control.json")),
         )
 
     def request(self, request_id: str) -> ParentOrderRequest:

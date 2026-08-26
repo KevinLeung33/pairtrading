@@ -99,3 +99,13 @@ python scripts/run_local_scenarios.py
 ```powershell
 python scripts/demo_readonly_check.py
 ```
+
+Basis 运行中动态调整阈值：策略启动后，使用与 `--state-path` 相同的状态文件执行下面的命令；策略会在约 1 秒内读取更新，文件通过原子替换写入，不需要重启进程：
+
+```bash
+python3 scripts/update_basis_threshold.py \
+  --state-path runtime/basis-1btc-001.json \
+  --entry-threshold-bp 15
+```
+
+可更新 `--pause-threshold-bp`、`--resume-threshold-bp`、`--exit-threshold-bp` 和 `--resume-exposure-base-qty`。入场阈值只影响尚未触发的入场；已开始的任务使用暂停/恢复阈值继续管理。

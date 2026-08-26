@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import logging
 import signal
+import time
 from pathlib import Path
 
 from .basis_strategy import BasisArbStrategy
@@ -132,10 +133,13 @@ async def run(config: AppConfig, request_id: str) -> None:
                 notifier,
             )
             logging.info("basis strategy %s waiting for entry basis", request_id)
+            last_reconcile = time.monotonic() - 5
             while not stop_event.is_set() and not strategy.terminal:
-                await asyncio.sleep(5)
-                await executor.reconcile()
+                await asyncio.sleep(1)
                 await strategy.refresh()
+                if time.monotonic() - last_reconcile >= 5:
+                    await executor.reconcile()
+                    last_reconcile = time.monotonic()
         else:
             parent = executor.parents.get(request_id)
             if parent is None:
