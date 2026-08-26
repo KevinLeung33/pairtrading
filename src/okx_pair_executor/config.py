@@ -38,6 +38,7 @@ class AppConfig:
     max_hedge_retries: int
     max_maker_attempts: int
     maker_reprice_interval_ms: int
+    status_report_interval_seconds: int
     basis_entry_threshold_bp: Decimal
     basis_pause_threshold_bp: Decimal
     basis_resume_threshold_bp: Decimal
@@ -68,6 +69,7 @@ class AppConfig:
             max_hedge_retries=int(os.getenv("MAX_HEDGE_RETRIES", "3")),
             max_maker_attempts=int(os.getenv("MAX_MAKER_ATTEMPTS", "50")),
             maker_reprice_interval_ms=int(os.getenv("MAKER_REPRICE_INTERVAL_MS", "150")),
+            status_report_interval_seconds=int(os.getenv("STATUS_REPORT_INTERVAL_SECONDS", "30")),
             basis_entry_threshold_bp=Decimal(os.getenv("BASIS_ENTRY_THRESHOLD_BP", "10")),
             basis_pause_threshold_bp=Decimal(os.getenv("BASIS_PAUSE_THRESHOLD_BP", "5")),
             basis_resume_threshold_bp=Decimal(os.getenv("BASIS_RESUME_THRESHOLD_BP", "8")),

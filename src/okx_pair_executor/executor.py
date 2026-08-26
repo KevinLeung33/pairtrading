@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -50,6 +51,7 @@ class PairExecutor:
         self._efficiency: dict[str, ExecutionEfficiency] = {}
         self._reprice_tasks: dict[str, asyncio.Task[None]] = {}
         self._market_spreads: dict[str, MarketSpreadTracker] = {}
+        self._terminal_report_sent: set[str] = set()
 
     def restore(self) -> dict[str, ParentOrder]:
         if not self.store:
@@ -631,52 +633,108 @@ class PairExecutor:
                     self._persist()
                     return
 
-    async def _notify(self, parent: ParentOrder, child: ChildOrder, reason: str) -> None:
-        if not self.notifier or not parent.request.lark_report:
+    async def notify_status(self, request_id: str) -> None:
+        """Send a task-level progress snapshot for a non-terminal parent."""
+        parent = self.parents.get(request_id)
+        if parent is None or parent.state in {
+            ParentOrderState.COMPLETED,
+            ParentOrderState.FAILED,
+            ParentOrderState.CANCELED,
+            ParentOrderState.RECOVERY,
+        }:
             return
+        await self._notify(parent, None, "EXECUTION_STATUS")
+
+    async def notify_terminal(self, request_id: str) -> None:
+        """Retry the terminal report from the live state during shutdown."""
+        parent = self.parents.get(request_id)
+        if parent is None or not self.notifier or not parent.request.lark_report:
+            return
+        if parent.state is ParentOrderState.COMPLETED:
+            if request_id not in self._terminal_report_sent:
+                await self._notify(parent, parent.children[-1] if parent.children else None, "PARENT_COMPLETED")
+        elif parent.state in {ParentOrderState.RECOVERY, ParentOrderState.FAILED}:
+            if request_id not in self._terminal_report_sent:
+                await self._notify(parent, parent.children[-1] if parent.children else None, "EXECUTION_RISK")
+
+    async def _notify(self, parent: ParentOrder, child: ChildOrder | None, reason: str) -> bool:
+        if reason in {"CHILD_STARTED", "CHILD_TERMINAL"}:
+            # Child execution remains internal; only task-level notifications
+            # are emitted to Lark.
+            return True
+        request_id = parent.request.request_id
+        if reason == "PARENT_COMPLETED" and request_id in self._terminal_report_sent:
+            return True
+        if not self.notifier or not parent.request.lark_report:
+            return True
+
         execution = None
-        if reason in {"PARENT_COMPLETED", "CHILD_TERMINAL"}:
-            if hasattr(self.exchange, "execution_details"):
-                try:
-                    execution = await self.exchange.execution_details(
-                        parent,
-                        child=child if reason == "CHILD_TERMINAL" else None,
-                        include_account=reason == "PARENT_COMPLETED",
-                    )
-                except Exception as exc:
-                    execution = {"report_error": str(exc)}
-        if execution is not None and reason == "PARENT_COMPLETED":
-            tracker = self._market_spreads.get(parent.request.request_id)
+        if reason in {"PARENT_COMPLETED", "EXECUTION_STATUS"} and hasattr(self.exchange, "execution_details"):
+            try:
+                execution = await self.exchange.execution_details(
+                    parent,
+                    child=None,
+                    include_account=reason == "PARENT_COMPLETED",
+                )
+            except Exception as exc:
+                execution = {"report_error": str(exc)}
+
+        if execution is not None and reason in {"PARENT_COMPLETED", "EXECUTION_STATUS"}:
+            # The order event/state is authoritative for cumulative quantity.
+            # REST fill aggregation can briefly lag behind the final IOC.
+            legs = execution.setdefault("legs", {})
+            perp_leg = legs.setdefault("perp", {})
+            spot_leg = legs.setdefault("spot", {})
+            perp_leg["filled_base_qty"] = str(parent.filled_base_qty)
+            spot_leg["filled_base_qty"] = str(parent.hedged_base_qty)
+            execution["state_progress"] = {
+                "filled_base_qty": str(parent.filled_base_qty),
+                "hedged_base_qty": str(parent.hedged_base_qty),
+                "exposure": str(parent.exposure),
+            }
+            tracker = self._market_spreads.get(request_id)
             if tracker is not None:
                 market = tracker.snapshot()
                 execution["market_spread"] = market
-                actual = Decimal(execution.get("effective_spread_rate_pct", "0"))
-                market_exec = Decimal(market.get("executable_twap_rate_pct", "0"))
-                execution["execution_vs_market_executable_rate_pct"] = str(actual - market_exec)
-            metrics = self._efficiency.get(parent.request.request_id)
+                if market.get("observations", 0):
+                    actual = Decimal(execution.get("effective_spread_rate_pct", "0"))
+                    market_exec = Decimal(market.get("executable_twap_rate_pct", "0"))
+                    execution["execution_vs_market_executable_rate_pct"] = str(actual - market_exec)
+            metrics = self._efficiency.get(request_id)
             if metrics is not None:
                 execution["efficiency"] = metrics.snapshot()
-                report_dir = Path(os.getenv("EFFICIENCY_REPORT_DIR", "runtime/reports"))
-                report_dir.mkdir(parents=True, exist_ok=True)
-                report_path = report_dir / f"execution-efficiency-{parent.request.request_id}.json"
-                efficiency_report = {
-                    "request_id": parent.request.request_id,
-                    "direction": parent.request.direction.value,
-                    "action": parent.request.action.value,
-                    "efficiency": execution.get("efficiency", {}),
-                    "market_spread": execution.get("market_spread", {}),
-                    "execution_vs_market_executable_rate_pct": execution.get("execution_vs_market_executable_rate_pct", "0"),
-                    "legs": execution.get("legs", {}),
-                    "unhedged_base_qty": execution.get("unhedged_base_qty", "0"),
-                    "children": [child.child_id for child in parent.children],
-                }
-                report_path.write_text(json.dumps(efficiency_report, indent=2, ensure_ascii=False), encoding="utf-8")
-                execution["efficiency_report_path"] = str(report_path)
+                if reason == "PARENT_COMPLETED":
+                    report_dir = Path(os.getenv("EFFICIENCY_REPORT_DIR", "runtime/reports"))
+                    report_dir.mkdir(parents=True, exist_ok=True)
+                    report_path = report_dir / f"execution-efficiency-{request_id}.json"
+                    efficiency_report = {
+                        "request_id": request_id,
+                        "direction": parent.request.direction.value,
+                        "action": parent.request.action.value,
+                        "efficiency": execution.get("efficiency", {}),
+                        "market_spread": execution.get("market_spread", {}),
+                        "execution_vs_market_executable_rate_pct": execution.get("execution_vs_market_executable_rate_pct", "N/A"),
+                        "legs": execution.get("legs", {}),
+                        "unhedged_base_qty": execution.get("unhedged_base_qty", "0"),
+                        "children": [item.child_id for item in parent.children],
+                    }
+                    report_path.write_text(json.dumps(efficiency_report, indent=2, ensure_ascii=False), encoding="utf-8")
+                    execution["efficiency_report_path"] = str(report_path)
+
         payload = report_payload(parent, child, execution)
-        if hasattr(self.notifier, "send_report"):
-            await self.notifier.send_report(reason, payload)
-        else:
-            await self.notifier.send(f"{reason}\n{payload}")
+        try:
+            if hasattr(self.notifier, "send_report"):
+                await self.notifier.send_report(reason, payload)
+            else:
+                await self.notifier.send(f"{reason}\n{payload}")
+        except Exception:
+            # Notification failure must not terminate order management. A
+            # completed parent is retried by notify_terminal in main finally.
+            logging.exception("failed to send %s report for %s", reason, request_id)
+            return False
+        if reason in {"PARENT_COMPLETED", "EXECUTION_RISK"}:
+            self._terminal_report_sent.add(request_id)
+        return True
 
     async def reconcile(self) -> list[FillEvent]:
         # The private WebSocket orders channel is the primary source of order

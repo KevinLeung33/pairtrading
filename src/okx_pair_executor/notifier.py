@@ -49,113 +49,124 @@ class LarkNotifier:
         await self._post({"msg_type": "text", "content": {"text": text}})
 
     async def send_report(self, reason: str, payload: dict[str, Any]) -> None:
-        child = payload.get("child", {})
-        execution = payload.get("execution", {})
+        execution = payload.get("execution", {}) or {}
+        legs = execution.get("legs", {}) or {}
+        perp = legs.get("perp", {}) or {}
+        spot = legs.get("spot", {}) or {}
+        progress = execution.get("state_progress", {}) or {}
+
+        def value(*values: Any, default: str = "0") -> Any:
+            for item in values:
+                if item is not None and item != "":
+                    return item
+            return default
+
+        perp_qty = value(perp.get("filled_base_qty"), progress.get("filled_base_qty"), payload.get("filled_base_qty"))
+        spot_qty = value(spot.get("filled_base_qty"), progress.get("hedged_base_qty"), payload.get("hedged_base_qty"))
+        exposure = value(execution.get("unhedged_base_qty"), progress.get("exposure"), payload.get("exposure"))
+
+        def avg_price(leg: dict[str, Any], qty: Any) -> str:
+            try:
+                if float(qty) == 0:
+                    return "N/A"
+            except (TypeError, ValueError):
+                return "N/A"
+            raw = leg.get("avg_price")
+            return "N/A" if raw in (None, "", "0", "0.0") else _short_decimal(raw)
+
+        market = execution.get("market_spread", {}) or {}
+        has_market_sample = bool(market.get("observations", 0))
+        market_quote = _short_decimal(market.get("quote_twap_rate_pct")) if has_market_sample else "N/A"
+        market_exec = _short_decimal(market.get("executable_twap_rate_pct")) if has_market_sample else "N/A"
+        relative = execution.get("execution_vs_market_executable_rate_pct")
+        relative_display = _short_decimal(relative, 4) if has_market_sample and relative not in (None, "") else "N/A"
+        actual_spread = execution.get("effective_spread_rate_pct")
+        actual_display = _short_decimal(actual_spread, 4) if actual_spread not in (None, "", "0", "0.0") else "N/A"
+        efficiency = execution.get("efficiency", {}) or {}
+        maker_ack = efficiency.get("maker_ack_latency", {}) or {}
+        amend = efficiency.get("maker_amend_latency", {}) or {}
+        maker_fill = efficiency.get("maker_time_to_fill", {}) or {}
+        hedge_ack = efficiency.get("hedge_ack_latency", {}) or {}
+        fees = f"合约 {_format_map(perp.get('fees', {}))}；现货 {_format_map(spot.get('fees', {}))}"
+        common = [
+            f"**任务**：{payload.get('request_id', '-')}\n",
+            f"**状态**：{payload.get('parent_state', '-')}\n",
+            f"**动作/方向**：{payload.get('action', '-')} / {payload.get('direction', '-')}\n",
+            f"**成交数量**：合约 {perp_qty} / 现货 {spot_qty}\n",
+            f"**成交均价**：合约 {avg_price(perp, perp_qty)} / 现货 {avg_price(spot, spot_qty)}\n",
+            f"**成交价差率**：{actual_display}%\n",
+            f"**市场报价 TWAP**：{market_quote}%\n",
+            f"**市场可执行 TWAP**：{market_exec}%\n",
+            f"**相对市场可执行价差**：{relative_display}%\n",
+            f"**未对冲敞口**：{_short_decimal(exposure, 8)}\n",
+        ]
+
         if reason == "PARENT_COMPLETED":
             template, icon, title = "green", "✅", "EXECUTION_COMPLETED"
-            legs = execution.get("legs", {})
-            perp = legs.get("perp", {})
-            spot = legs.get("spot", {})
-            reconciliation = execution.get("account_reconciliation", {})
-            fields = [
-                f"**任务**：{payload.get('request_id', '-')}",
-                f"**方向**：{payload.get('direction', '-')}",
-                f"**成交数量**：合约 {perp.get('filled_base_qty', '0')} / 现货 {spot.get('filled_base_qty', '0')}",
-                f"**成交均价**：合约 {_short_decimal(perp.get('avg_price', '0'))} / 现货 {_short_decimal(spot.get('avg_price', '0'))}",
-                f"**已实现盈亏**：合约 {_short_decimal(perp.get('realized_pnl', '0'))} / 现货 {_short_decimal(spot.get('realized_pnl', '0'))}",
-                f"**成交价差率**：{_short_decimal(execution.get('effective_spread_rate_pct', execution.get('spread_rate_pct', '0')), 4)}%",
-                f"**市场报价 TWAP**：{_short_decimal(execution.get('market_spread', {}).get('quote_twap_rate_pct', '0'), 4)}%",
-                f"**市场可执行 TWAP**：{_short_decimal(execution.get('market_spread', {}).get('executable_twap_rate_pct', '0'), 4)}%",
-                f"**相对市场可执行价差**：{_short_decimal(execution.get('execution_vs_market_executable_rate_pct', '0'), 4)}%",
-                f"**执行效率**：Maker ACK {_short_decimal(execution.get('efficiency', {}).get('maker_ack_latency', {}).get('avg_ms', 0), 2)}ms；改单 ACK {_short_decimal(execution.get('efficiency', {}).get('maker_amend_latency', {}).get('avg_ms', 0), 2)}ms；改单 {execution.get('efficiency', {}).get('maker_reprices', 0)} 次；Maker 等待 {_short_decimal(execution.get('efficiency', {}).get('maker_time_to_fill', {}).get('avg_ms', 0), 2)}ms；对冲 ACK {_short_decimal(execution.get('efficiency', {}).get('hedge_ack_latency', {}).get('avg_ms', 0), 2)}ms；IOC 成交率 {_short_decimal(execution.get('efficiency', {}).get('hedge_fill_rate_pct', 0), 2)}%",
-                f"**手续费**：合约 {_format_map(perp.get('fees', {}))}；现货 {_format_map(spot.get('fees', {}))}",
-                f"**未对冲敞口**：{_short_decimal(execution.get('unhedged_base_qty', payload.get('exposure', '0')), 8)}",
-                f"**资产对账**：{reconciliation.get('status', 'UNAVAILABLE')}",
-                f"**余额变化**：{_format_map(reconciliation.get('balance_delta', {}))}",
+            reconciliation = execution.get("account_reconciliation", {}) or {}
+            common.extend([
+                f"**已实现盈亏**：合约 {_short_decimal(perp.get('realized_pnl', '0'))} / 现货 {_short_decimal(spot.get('realized_pnl', '0'))}\n",
+                f"**执行效率**：Maker ACK {_short_decimal(maker_ack.get('avg_ms', 0), 2)}ms；改单 ACK {_short_decimal(amend.get('avg_ms', 0), 2)}ms；改单 {efficiency.get('maker_reprices', 0)} 次；Maker 等待 {_short_decimal(maker_fill.get('avg_ms', 0), 2)}ms；对冲 ACK {_short_decimal(hedge_ack.get('avg_ms', 0), 2)}ms；IOC 成交率 {_short_decimal(efficiency.get('hedge_fill_rate_pct', 0), 2)}%\n",
+                f"**手续费**：{fees}\n",
+                f"**资产对账**：{reconciliation.get('status', 'UNAVAILABLE')}\n",
+                f"**余额变化**：{_format_map(reconciliation.get('balance_delta', {}))}\n",
                 f"**仓位变化**：{_format_map(reconciliation.get('position_delta_contracts', {}))}",
-            ]
+            ])
             if reconciliation.get("status") == "CHECK_REQUIRED":
-                fields.append(f"**差额**：余额 {reconciliation.get('balance_difference', {})}；仓位 {reconciliation.get('position_difference', {})}")
+                common.append(f"**差额**：余额 {reconciliation.get('balance_difference', {})}；仓位 {reconciliation.get('position_difference', {})}")
+        elif reason == "EXECUTION_STATUS":
+            template, icon, title = "blue", "⏳", "EXECUTION_STATUS"
+            common.extend([
+                f"**对冲次数**：{sum(int(item.get('hedge_attempts', 0)) for item in payload.get('children', []) if isinstance(item, dict)) or '-'}",
+                f"**手续费**：{fees}",
+            ])
+            if execution.get("report_error"):
+                common.append(f"**状态数据**：{execution['report_error']}")
+        elif reason == "ORDER_STARTED":
+            template, icon, title = "blue", "▶️", "EXECUTION_STARTED"
+            params = payload.get("parameters", {})
+            common = [
+                f"**任务**：{payload.get('request_id', '-')}\n",
+                f"**状态**：{payload.get('parent_state', '-')}\n",
+                f"**动作/方向**：{payload.get('action', '-')} / {payload.get('direction', '-')}\n",
+                f"**目标数量**：{params.get('target_base_qty', '-')}\n",
+                f"**拆单粒度**：{params.get('child_base_qty', '-')}\n",
+                f"**现货交易模式**：{params.get('spot_td_mode', 'cross')}\n",
+                f"**最大敞口**：{params.get('max_unhedged_base_qty', '-')}\n",
+                f"**改单间隔**：{params.get('maker_reprice_interval_ms', '-')}ms",
+            ]
+        elif reason in {"HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED", "REPRICE_FAILED", "TARGET_INCOMPLETE", "MAKER_RETRY_EXHAUSTED", "EXECUTION_RISK"}:
+            template, icon, title = "red", "🚨", "EXECUTION_RISK"
+            common.extend([
+                f"**原因**：{payload.get('error', reason)}\n",
+                f"**手续费**：{fees}",
+            ])
         elif reason in {"BASIS_STARTED", "BASIS_PAUSED", "BASIS_RESUMED"}:
             strategy = payload.get("strategy", {})
             template = "yellow" if reason == "BASIS_PAUSED" else "blue"
             title = reason
             icon = "⏸️" if reason == "BASIS_PAUSED" else "📈"
-            fields = [
-                f"**任务**：{payload.get('request_id', '-')}",
-                f"**策略状态**：{reason}",
-                f"**原因**：{strategy.get('reason', '-') or '-'}",
-                f"**方向/动作**：{payload.get('direction', '-')} / {payload.get('action', '-')}",
-                f"**当前 Basis**：{_short_decimal(strategy.get('basis_bp', '0'), 2)} bp",
-                f"**阈值**：入场 {strategy.get('entry_threshold_bp', '-')} / 暂停 {strategy.get('pause_threshold_bp', '-')} / 恢复 {strategy.get('resume_threshold_bp', '-')} bp",
-                f"**成交/对冲**：{payload.get('filled_base_qty', '0')} / {payload.get('hedged_base_qty', '0')}",
+            common = [
+                f"**任务**：{payload.get('request_id', '-')}\n",
+                f"**策略状态**：{reason}\n",
+                f"**原因**：{strategy.get('reason', '-') or '-'}\n",
+                f"**方向/动作**：{payload.get('direction', '-')} / {payload.get('action', '-')}\n",
+                f"**当前 Basis**：{_short_decimal(strategy.get('basis_bp', '0'), 2)} bp\n",
+                f"**成交/对冲**：{payload.get('filled_base_qty', '0')} / {payload.get('hedged_base_qty', '0')}\n",
                 f"**当前敞口**：{payload.get('exposure', '0')}",
-            ]
-        elif reason == "CHILD_TERMINAL":
-            template, icon, title = "green", "✅", "CHILD_COMPLETED"
-            legs = execution.get("legs", {})
-            perp = legs.get("perp", {})
-            spot = legs.get("spot", {})
-            fields = [
-                f"**任务**：{payload.get('request_id', '-')}",
-                f"**子单**：{child.get('child_id', '-')}",
-                f"**成交数量**：合约 {perp.get('filled_base_qty', child.get('perp_filled_base_qty', '0'))} / 现货 {spot.get('filled_base_qty', child.get('spot_filled_base_qty', '0'))}",
-                f"**成交均价**：合约 {_short_decimal(perp.get('avg_price', '0'))} / 现货 {_short_decimal(spot.get('avg_price', '0'))}",
-                f"**已实现盈亏**：合约 {_short_decimal(perp.get('realized_pnl', '0'))} / 现货 {_short_decimal(spot.get('realized_pnl', '0'))}",
-                f"**成交价差率**：{_short_decimal(execution.get('effective_spread_rate_pct', execution.get('spread_rate_pct', '0')), 4)}%",
-                f"**市场报价 TWAP**：{_short_decimal(execution.get('market_spread', {}).get('quote_twap_rate_pct', '0'), 4)}%",
-                f"**市场可执行 TWAP**：{_short_decimal(execution.get('market_spread', {}).get('executable_twap_rate_pct', '0'), 4)}%",
-                f"**相对市场可执行价差**：{_short_decimal(execution.get('execution_vs_market_executable_rate_pct', '0'), 4)}%",
-
-                f"**手续费**：合约 {_format_map(perp.get('fees', {}))}；现货 {_format_map(spot.get('fees', {}))}",
-                f"**未对冲敞口**：{_short_decimal(execution.get('unhedged_base_qty', child.get('exposure', '0')), 8)}",
-                f"**对冲次数**：{child.get('hedge_attempts', 0)}",
-            ]
-        elif reason in {"ORDER_STARTED", "CHILD_STARTED"}:
-            template, icon, title = "blue", "▶️", reason
-            params = payload.get("parameters", {})
-            fields = [
-                f"**任务**：{payload.get('request_id', '-')}",
-                f"**动作/方向**：{payload.get('action', '-')} / {payload.get('direction', '-')}",
-                f"**目标数量**：{params.get('target_base_qty', '-')}",
-                f"**单批数量**：{params.get('child_base_qty', '-')}",
-                f"**现货交易模式**：{params.get('spot_td_mode', 'cross')}",
-                f"**当前子单**：{child.get('child_id', '-')}，目标 {child.get('target_base_qty', '-')}",
-                f"**合约张数**：{child.get('perp_target_contracts', '-')}",
-                f"**Maker 价格**：{child.get('maker_price', '-')}",
-                f"**最大敞口**：{params.get('max_unhedged_base_qty', '-')}",
-                f"**改单间隔**：{params.get('maker_reprice_interval_ms', '-')}ms",
-            ]
-        elif reason in {"HEDGE_FAILED", "EXPOSURE_LIMIT", "HEDGE_RETRY_EXHAUSTED", "REPRICE_FAILED", "TARGET_INCOMPLETE", "MAKER_RETRY_EXHAUSTED"}:
-            template, icon, title = "red", "🚨", "RISK_ALERT"
-            fields = [
-                f"**任务**：{payload.get('request_id', '-')}",
-                f"**子单**：{child.get('child_id', '-')}",
-                f"**状态**：{child.get('state', payload.get('parent_state', '-'))}",
-                f"**当前敞口**：{payload.get('exposure', '0')}",
-                f"**对冲次数**：{child.get('hedge_attempts', 0)}",
-                f"**原因**：{payload.get('error', reason)}",
             ]
         else:
-            template, icon, title = "blue", "ℹ️", "CHILD_PROGRESS"
-            fields = [
-                f"**任务**：{payload.get('request_id', '-')}",
-                f"**子单**：{child.get('child_id', '-')}",
-                f"**状态**：{child.get('state', payload.get('parent_state', '-'))}",
-                f"**进度**：合约 {child.get('perp_filled_base_qty', '0')} / 现货 {child.get('spot_filled_base_qty', '0')}",
-                f"**当前敞口**：{payload.get('exposure', '0')}",
-                f"**对冲次数**：{child.get('hedge_attempts', 0)}",
-            ]
+            template, icon, title = "blue", "ℹ️", "EXECUTION_STATUS"
+
         card = {
             "config": {"wide_screen_mode": True},
             "header": {
                 "template": template,
                 "title": {"tag": "plain_text", "content": f"{icon} {title}"},
             },
-            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(fields)}}],
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(common)}}],
         }
         await self._post({"msg_type": "interactive", "card": card})
-
 
 
 class NullNotifier:

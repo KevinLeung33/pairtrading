@@ -71,7 +71,7 @@ bash scripts/run_demo.sh --request-id DEMO-001
 
 当前 runner 默认只允许 Demo Trading。实盘必须同时设置 `OKX_DEMO=0` 和传入 `--allow-live`。
 
-交易执行默认使用 `OKX_TRADE_WS=1`：下单、改单、撤单优先走 OKX 私有 WebSocket，失败时才降级到 REST；现货腿的 `SPOT_TD_MODE=cross` 表示使用 Cross Margin，设为 `cash` 才是普通现货。Maker 改单使用 `amend-order`，不会默认执行 cancel-and-replace。私有 `orders` 回报是主状态来源，程序每 5 秒只对仍在工作的已知 Maker 订单做一次单订单 REST 核对，不轮询 `orders-history`。
+交易执行默认使用 `OKX_TRADE_WS=1`：下单、改单、撤单优先走 OKX 私有 WebSocket，失败时才降级到 REST；任务执行期间不推送 child 卡片，只发送一张开始卡片，并按 `STATUS_REPORT_INTERVAL_SECONDS`（默认 30 秒）发送任务级状态；进入终态后发送一次最终结果卡片。现货腿的 `SPOT_TD_MODE=cross` 表示使用 Cross Margin，设为 `cash` 才是普通现货。Maker 改单使用 `amend-order`，不会默认执行 cancel-and-replace。私有 `orders` 回报是主状态来源，程序每 5 秒只对仍在工作的已知 Maker 订单做一次单订单 REST 核对，不轮询 `orders-history`。
 
 执行效率报告会额外记录 `Amend ACK P95 ms`、Maker 报价年龄、改单次数和 IOC 成交率。首次切换到 WS 后建议先运行 Demo Trading，并确认最终效率报告中的改单延迟和无异常敞口。
 

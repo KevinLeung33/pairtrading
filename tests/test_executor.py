@@ -73,7 +73,7 @@ async def test_partial_perp_fill_is_hedged_by_delta():
     ))
     child = parent.children[0]
     await executor.on_order_event(FillEvent(child.perp_order_id, child.perp_cl_ord_id, "BTC-USDT-SWAP", "partially_filled", Decimal("10")))
-    assert child.spot_filled_base_qty == Decimal("10")
+    assert child.spot_filled_base_qty == Decimal("0.1")
     assert child.unhedged_base_qty == Decimal("0")
 
 
@@ -215,3 +215,47 @@ async def test_failed_amend_result_restores_quote_for_retry():
     exchange.maker_bid = Decimal("64999.8")
     await executor.reprice_child(child.child_id)
     assert exchange.amend_count == 2
+
+class CaptureNotifier:
+    def __init__(self):
+        self.reports = []
+
+    async def send_report(self, reason, payload):
+        self.reports.append((reason, payload))
+
+
+@pytest.mark.asyncio
+async def test_task_notifications_hide_child_events_and_final_is_once():
+    exchange = FakeExchange()
+    notifier = CaptureNotifier()
+    executor = PairExecutor(exchange, notifier=notifier)
+    request = ParentOrderRequest(
+        request_id="P-NOTIFY",
+        direction=Direction.SHORT_SPOT_LONG_SWAP,
+        spot_inst_id="BTC-USDT",
+        swap_inst_id="BTC-USDT-SWAP",
+        target_base_qty=Decimal("0.1"),
+        child_base_qty=Decimal("0.1"),
+    )
+
+    parent = await executor.submit(request)
+    assert [reason for reason, _ in notifier.reports] == ["ORDER_STARTED"]
+
+    await executor.notify_status(request.request_id)
+    assert [reason for reason, _ in notifier.reports] == ["ORDER_STARTED", "EXECUTION_STATUS"]
+
+    child = parent.children[0]
+    await executor.on_order_event(FillEvent(
+        child.perp_order_id,
+        child.perp_cl_ord_id,
+        "BTC-USDT-SWAP",
+        "filled",
+        Decimal("10"),
+    ))
+    reasons = [reason for reason, _ in notifier.reports]
+    assert "CHILD_STARTED" not in reasons
+    assert "CHILD_TERMINAL" not in reasons
+    assert reasons.count("PARENT_COMPLETED") == 1
+
+    await executor.notify_terminal(request.request_id)
+    assert [reason for reason, _ in notifier.reports].count("PARENT_COMPLETED") == 1

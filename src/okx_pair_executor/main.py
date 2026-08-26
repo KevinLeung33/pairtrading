@@ -44,6 +44,31 @@ async def run(config: AppConfig, request_id: str) -> None:
     order_task = asyncio.create_task(client.subscribe_orders(executor.on_order_event), name="okx-private-orders")
 
     stop_event = asyncio.Event()
+
+    async def status_report_loop() -> None:
+        interval = max(1, config.status_report_interval_seconds)
+        terminal_states = {"completed", "failed", "canceled", "recovery"}
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                return
+            except asyncio.TimeoutError:
+                pass
+            parent = executor.parents.get(request_id)
+            if parent is None:
+                continue
+            if parent.state.value in terminal_states:
+                return
+            try:
+                await executor.notify_status(request_id)
+            except Exception:
+                # A status notification must never interrupt order management.
+                logging.exception("failed to send execution status for %s", request_id)
+
+    status_task = asyncio.create_task(
+        status_report_loop(),
+        name=f"execution-status-{request_id}",
+    )
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -79,12 +104,18 @@ async def run(config: AppConfig, request_id: str) -> None:
                 parent.state = ParentOrderState.RECOVERY
                 await executor.reconcile()
     finally:
+        status_task.cancel()
+        await asyncio.gather(status_task, return_exceptions=True)
         if strategy is not None:
             await strategy.shutdown()
         try:
             await executor.cancel_active_makers()
         except Exception:
             logging.exception("failed to cancel active Maker orders during shutdown")
+        try:
+            await executor.notify_terminal(request_id)
+        except Exception:
+            logging.exception("failed to send terminal execution report for %s", request_id)
         await executor.stop_repricing()
         book_stream.stop()
         for task in (book_task, order_task):
@@ -105,6 +136,7 @@ def main() -> None:
     parser.add_argument("--max-unhedged-base-qty", type=Decimal)
     parser.add_argument("--max-hedge-retries", type=int)
     parser.add_argument("--max-maker-attempts", type=int)
+    parser.add_argument("--status-report-interval-seconds", type=int)
     parser.add_argument("--maker-reprice-interval-ms", type=int)
     parser.add_argument("--basis-entry-threshold-bp", type=Decimal)
     parser.add_argument("--basis-pause-threshold-bp", type=Decimal)
@@ -135,8 +167,8 @@ def main() -> None:
         overrides["max_hedge_retries"] = args.max_hedge_retries
     if args.max_maker_attempts is not None:
         overrides["max_maker_attempts"] = args.max_maker_attempts
-    if args.maker_reprice_interval_ms is not None:
-        overrides["maker_reprice_interval_ms"] = args.maker_reprice_interval_ms
+    if args.status_report_interval_seconds is not None:
+        overrides["status_report_interval_seconds"] = args.status_report_interval_seconds
     if args.basis_entry_threshold_bp is not None:
         overrides["basis_entry_threshold_bp"] = args.basis_entry_threshold_bp
     if args.basis_pause_threshold_bp is not None:
