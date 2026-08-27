@@ -32,9 +32,18 @@ class ExecutionEfficiency:
     hedge_requested_qty: float = 0.0
     hedge_filled_qty: float = 0.0
     maker_started_at: dict[str, float] = field(default_factory=dict)
+    bbo_coalesced: int = 0
+    book_dispatch_latencies: list[float] = field(default_factory=list)
 
     def record_bbo(self) -> None:
         self.bbo_events += 1
+
+    def record_bbo_queue(self, coalesced: bool) -> None:
+        if coalesced:
+            self.bbo_coalesced += 1
+
+    def book_dispatched(self, queue_age_ms: float) -> None:
+        self.book_dispatch_latencies.append(queue_age_ms)
 
     def maker_submitted(self, child_id: str, latency_ms: float, quote_age_ms: float, reprice: bool) -> None:
         self.maker_ack_latencies.append(latency_ms)
@@ -64,6 +73,7 @@ class ExecutionEfficiency:
         maker_quote_age = _summary(self.maker_quote_ages)
         hedge_ack = _summary(self.hedge_ack_latencies)
         maker_amend = _summary(self.maker_amend_latencies)
+        book_dispatch = _summary(self.book_dispatch_latencies)
         warnings: list[str] = []
         if maker_ack["p95_ms"] > 500:
             warnings.append("maker_ack_slow")
@@ -71,6 +81,8 @@ class ExecutionEfficiency:
             warnings.append("maker_amend_slow")
         if maker_quote_age["p95_ms"] > 500:
             warnings.append("maker_quote_stale")
+        if book_dispatch["p95_ms"] > 200:
+            warnings.append("book_dispatch_slow")
         if hedge_ack["p95_ms"] > 500:
             warnings.append("hedge_ack_slow")
         if self.hedge_requested_qty and self.hedge_filled_qty < self.hedge_requested_qty:
@@ -84,6 +96,13 @@ class ExecutionEfficiency:
             "maker_quote_age": maker_quote_age,
             "maker_amend_latency": maker_amend,
             "maker_time_to_fill": _summary(self.maker_waits),
+            "bbo_coalesced": self.bbo_coalesced,
+            "bbo_coalesce_rate_pct": round(
+                self.bbo_coalesced / self.bbo_events * 100
+                if self.bbo_events else 0,
+                4,
+            ),
+            "book_dispatch_latency": book_dispatch,
             "hedge_ack_latency": hedge_ack,
             "hedge_roundtrip": _summary(self.hedge_roundtrips),
             "hedge_fill_rate_pct": round(

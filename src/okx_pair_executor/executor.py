@@ -181,20 +181,33 @@ class PairExecutor:
         self._children_by_order[ack.ord_id] = child
         self._persist()
 
-    async def on_book(self, inst_id: str, best_bid: Decimal, best_ask: Decimal) -> None:
+    def record_book(self, inst_id: str, best_bid: Decimal, best_ask: Decimal) -> None:
         self._latest_bbo[inst_id] = (best_bid, best_ask)
         self._bbo_updated_at[inst_id] = time.perf_counter()
         for metrics in self._efficiency.values():
             metrics.record_bbo()
         for tracker in self._market_spreads.values():
             tracker.update(inst_id, best_bid, best_ask)
+
+    def record_bbo_queue(self, coalesced: bool) -> None:
+        for metrics in self._efficiency.values():
+            metrics.record_bbo_queue(coalesced)
+
+    async def process_book(self, inst_id: str, received_at: float | None = None) -> None:
+        if received_at is not None:
+            queue_age_ms = max(0.0, (time.perf_counter() - received_at) * 1000)
+            for metrics in self._efficiency.values():
+                metrics.book_dispatched(queue_age_ms)
         for parent in self.parents.values():
             if parent.request.swap_inst_id != inst_id:
                 continue
             buy = parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
             if parent.request.action.value == "close":
                 buy = not buy
-            target = best_bid if buy else best_ask
+            bbo = self._latest_bbo.get(inst_id)
+            if not bbo:
+                continue
+            target = bbo[0] if buy else bbo[1]
             for child in parent.children:
                 if child.state is not ChildState.MAKER_WORKING or not child.perp_order_id:
                     continue
@@ -204,6 +217,10 @@ class PairExecutor:
                     self._debounced_reprice(child.child_id),
                     name=f"reprice-{child.child_id}",
                 )
+
+    async def on_book(self, inst_id: str, best_bid: Decimal, best_ask: Decimal) -> None:
+        self.record_book(inst_id, best_bid, best_ask)
+        await self.process_book(inst_id)
 
     async def _debounced_reprice(self, child_id: str) -> None:
         child = next((child for parent in self.parents.values() for child in parent.children

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .basis_strategy import BasisArbStrategy
 from .config import AppConfig
+from .dispatch import BookUpdate, LatestBookQueue, consume_order_events
 from .executor import PairExecutor
 from .market_data import OkxBookStream
 from .models import Direction, OrderAction, ParentOrderState
@@ -32,16 +33,58 @@ async def run(config: AppConfig, request_id: str) -> None:
     executor = PairExecutor(client, notifier, JsonStateStore(config.state_path))
     executor.restore()
     strategy: BasisArbStrategy | None = None
+    book_queue = LatestBookQueue()
+    order_queue: asyncio.Queue = asyncio.Queue(maxsize=4096)
+    book_processing_task: asyncio.Task | None = None
 
     async def on_book(inst_id, best_bid, best_ask):
+        # Keep the WS callback O(1): record the quote and enqueue only the
+        # latest decision input. Slow strategy/execution work runs elsewhere.
+        received_at = time.perf_counter()
         client.update_orderbook(inst_id, best_bid=best_bid, best_ask=best_ask)
-        # Let the strategy gate/cancel before PairExecutor schedules a reprice.
-        if strategy is not None:
-            await strategy.on_book(inst_id, best_bid, best_ask)
-        await executor.on_book(inst_id, best_bid, best_ask)
+        executor.record_book(inst_id, best_bid, best_ask)
+        coalesced = book_queue.submit(BookUpdate(
+            inst_id=inst_id,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            received_at=received_at,
+        ))
+        executor.record_bbo_queue(coalesced)
 
     book_stream = OkxBookStream([config.spot_inst_id, config.swap_inst_id], on_book, demo=config.demo)
     stop_event = asyncio.Event()
+
+    async def book_processing_loop() -> None:
+        while not stop_event.is_set():
+            updates = await book_queue.get_batch()
+            if not updates:
+                return
+            for update in updates:
+                if stop_event.is_set():
+                    return
+                try:
+                    if strategy is not None:
+                        await strategy.on_book(
+                            update.inst_id,
+                            update.best_bid,
+                            update.best_ask,
+                        )
+                    await executor.process_book(
+                        update.inst_id,
+                        received_at=update.received_at,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logging.exception(
+                        "book decision failed for %s (%s)",
+                        request_id,
+                        update.inst_id,
+                    )
+                    await executor.notify_runtime_warning(
+                        request_id,
+                        f"market event processing failed: {exc}",
+                    )
 
     async def public_book_stream_loop() -> None:
         backoff = 1.0
@@ -72,7 +115,7 @@ async def run(config: AppConfig, request_id: str) -> None:
         backoff = 1.0
         while not stop_event.is_set():
             try:
-                await client.subscribe_orders(executor.on_order_event)
+                await client.subscribe_orders(order_queue.put)
                 if stop_event.is_set():
                     return
                 message = "private order WebSocket closed unexpectedly"
@@ -90,6 +133,27 @@ async def run(config: AppConfig, request_id: str) -> None:
     order_task = asyncio.create_task(
         private_order_stream_loop(),
         name="okx-private-orders",
+    )
+
+    async def order_event_error(event, exc) -> None:
+        logging.error(
+            "order event processing failed: %s",
+            exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        await executor.notify_runtime_warning(
+            request_id,
+            f"订单回报处理失败: {exc}",
+        )
+
+    order_dispatch_task = asyncio.create_task(
+        consume_order_events(
+            order_queue,
+            executor.on_order_event,
+            stop_event,
+            order_event_error,
+        ),
+        name="okx-order-event-dispatcher",
     )
 
     async def status_report_loop() -> None:
@@ -125,6 +189,10 @@ async def run(config: AppConfig, request_id: str) -> None:
 
     try:
         await client.wait_for_book([config.spot_inst_id, config.swap_inst_id])
+        book_processing_task = asyncio.create_task(
+            book_processing_loop(),
+            name="okx-book-decision-dispatcher",
+        )
         if config.strategy_mode == "basis":
             strategy = BasisArbStrategy(
                 executor,
@@ -157,6 +225,8 @@ async def run(config: AppConfig, request_id: str) -> None:
     finally:
         status_task.cancel()
         await asyncio.gather(status_task, return_exceptions=True)
+        stop_event.set()
+        book_queue.stop()
         if strategy is not None:
             await strategy.shutdown()
         try:
@@ -169,9 +239,12 @@ async def run(config: AppConfig, request_id: str) -> None:
             logging.exception("failed to send terminal execution report for %s", request_id)
         await executor.stop_repricing()
         book_stream.stop()
-        for task in (book_task, order_task):
+        tasks = [book_task, order_task, order_dispatch_task]
+        if book_processing_task is not None:
+            tasks.append(book_processing_task)
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(book_task, order_task, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         await client.close()
 
 

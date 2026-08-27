@@ -88,8 +88,8 @@ def main() -> int:
         f"Suite: {'PASS' if suite.get('passed') else 'FAIL'}",
         f"Cases: {len(rows)}; efficiency files: {len(rows) - len(missing)}; missing: {len(missing)}",
         "",
-        "| Case | Result | Efficiency | BBO events | Maker ACK avg/P95 ms | Amend ACK P95 ms | Quote age P95 ms | Reprices | Hedge ACK P95 ms | IOC fill rate | Warnings |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Case | Result | Efficiency | BBO events | BBO coalesced | Book queue P95 ms | Maker ACK avg/P95 ms | Amend ACK P95 ms | Quote age P95 ms | Reprices | Hedge ACK P95 ms | IOC fill rate | Warnings |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in rows:
         eff = row.get("efficiency") or {}
@@ -97,10 +97,13 @@ def main() -> int:
         maker_ack = metrics.get("maker_ack_latency", {})
         maker_amend = metrics.get("maker_amend_latency", {})
         quote_age = metrics.get("maker_quote_age", {})
+        book_dispatch = metrics.get("book_dispatch_latency", {})
         hedge_ack = metrics.get("hedge_ack_latency", {})
         lines.append(
             f"| {row['name']} | {'PASS' if row['passed'] else 'FAIL'} | "
             f"{metrics.get('status', 'MISSING')} | {metrics.get('bbo_events', '-')}"
+            f" | {metrics.get('bbo_coalesced', '-')} ({metrics.get('bbo_coalesce_rate_pct', '-')}%)"
+            f" | {book_dispatch.get('p95_ms', '-')}"
             f" | {maker_ack.get('avg_ms', '-')}/{maker_ack.get('p95_ms', '-')}"
             f" | {maker_amend.get('p95_ms', '-')}"
             f" | {quote_age.get('p95_ms', '-')}"
