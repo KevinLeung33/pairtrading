@@ -45,6 +45,88 @@ OKX_PASSPHRASE=你的Demo Passphrase
 LARK_WEBHOOK_URL=你的Lark Webhook
 ```
 
+
+### 完整 `.env` 配置模板
+
+项目从仓库根目录的 `.env` 读取启动配置。变量名使用大写和下划线，不要写成命令行参数形式（例如使用 `BASIS_ENTRY_THRESHOLD_BP`，不要写 `--basis-entry-threshold-bp`）。下面是完整模板：
+
+```dotenv
+# OKX credentials
+OKX_API_KEY=你的Demo API Key
+OKX_SECRET_KEY=你的Demo Secret Key
+OKX_PASSPHRASE=你的Demo Passphrase
+OKX_DEMO=1
+
+# Instruments and account mode
+SPOT_INST_ID=BTC-USDT
+SWAP_INST_ID=BTC-USDT-SWAP
+SPOT_TD_MODE=cross
+
+# Strategy request
+STRATEGY_MODE=basis
+ARB_DIRECTION=short_spot_long_swap
+ARB_ACTION=open
+TARGET_BASE_QTY=1
+CHILD_BASE_QTY=0.1
+
+# Execution and risk
+MAX_SPOT_SLIPPAGE_BPS=10
+MAX_UNHEDGED_BASE_QTY=0.01
+MAX_HEDGE_RETRIES=3
+MAX_MAKER_ATTEMPTS=50
+MAKER_REPRICE_INTERVAL_MS=150
+
+# Basis signal thresholds, all in bp
+BASIS_ENTRY_THRESHOLD_BP=10
+BASIS_PAUSE_THRESHOLD_BP=5
+BASIS_RESUME_THRESHOLD_BP=8
+BASIS_EXIT_THRESHOLD_BP=0
+BASIS_RESUME_EXPOSURE_BASE_QTY=0.005
+BASIS_SIGNAL_INTERVAL_MS=50
+
+# Runtime and reports
+STATUS_REPORT_INTERVAL_SECONDS=30
+STATE_PATH=runtime/basis-1btc-open-001.json
+# Optional; if omitted, derived from STATE_PATH:
+# BASIS_CONTROL_PATH=runtime/basis-1btc-open-001.basis-control.json
+
+# Optional Lark notification
+LARK_WEBHOOK_URL=你的Lark Webhook
+LARK_SECRET=
+
+# 1 = prefer private WebSocket for order/amend/cancel; 0 = REST path
+OKX_TRADE_WS=1
+```
+
+参数作用：
+
+| 配置项 | 作用 |
+|---|---|
+| `OKX_DEMO` | `1` 使用 Demo；`0` 使用实盘。实盘仍必须显式传 `--allow-live` |
+| `STRATEGY_MODE` | `basis` 按价差阈值运行；`pair` 收到请求后直接执行 |
+| `ARB_DIRECTION` | `short_spot_long_swap` 或 `long_spot_short_swap` |
+| `ARB_ACTION` | `open` 开仓或 `close` 平仓 |
+| `TARGET_BASE_QTY` | 父订单目标基础币数量，例如 BTC |
+| `CHILD_BASE_QTY` | 每批基础币数量 |
+| `MAX_SPOT_SLIPPAGE_BPS` | 现货 IOC 允许的最大滑点 |
+| `MAX_UNHEDGED_BASE_QTY` | 最大允许未对冲敞口 |
+| `MAX_HEDGE_RETRIES` | 现货 IOC 对冲失败后的最大重试次数 |
+| `MAX_MAKER_ATTEMPTS` | Maker 挂单/改单的最大尝试次数 |
+| `MAKER_REPRICE_INTERVAL_MS` | Maker 最小改单间隔 |
+| `BASIS_ENTRY_THRESHOLD_BP` | 尚未触发时，达到该 Basis 才开始执行 |
+| `BASIS_PAUSE_THRESHOLD_BP` | 执行中低于该 Basis 时暂停 |
+| `BASIS_RESUME_THRESHOLD_BP` | 暂停后达到该 Basis 且敞口满足条件时恢复 |
+| `BASIS_EXIT_THRESHOLD_BP` | `action=close` 时使用的平仓触发阈值 |
+| `BASIS_RESUME_EXPOSURE_BASE_QTY` | 暂停后允许恢复的最大敞口 |
+| `BASIS_SIGNAL_INTERVAL_MS` | Basis 信号判断最小间隔 |
+| `STATUS_REPORT_INTERVAL_SECONDS` | Lark 任务状态报告间隔 |
+| `STATE_PATH` | 当前任务的 JSON 状态文件 |
+| `BASIS_CONTROL_PATH` | 运行时控制文件；不填写时根据 `STATE_PATH` 自动生成 |
+| `OKX_TRADE_WS` | 是否优先通过私有 WebSocket 下单、改单和撤单 |
+
+启动时，命令行参数会覆盖 `.env` 中的同名配置。例如 `--target-base-qty 0.5` 会覆盖 `TARGET_BASE_QTY=1`。但程序运行后修改 `.env` 不会生效；运行中要使用第 5 节的控制命令。
+
+实盘时把 `OKX_DEMO=0`，并替换为实盘 API Key。实盘 API Key 和 Demo API Key 不要混用。
 确认 API Key 只开启交易权限，不开启提现权限；先运行只读检查：
 
 ```bash
