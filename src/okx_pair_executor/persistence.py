@@ -44,6 +44,7 @@ class JsonStateStore:
                 request_id=request_raw["request_id"],
                 direction=Direction(request_raw["direction"]),
                 action=OrderAction(request_raw.get("action", "open")),
+                position_mode=request_raw.get("position_mode", "net"),
                 spot_td_mode=request_raw.get("spot_td_mode", "cross"),
                 spot_inst_id=request_raw["spot_inst_id"],
                 swap_inst_id=request_raw["swap_inst_id"],

@@ -224,6 +224,8 @@ class OkxV5Client:
             payload["reduceOnly"] = "true"
         if request.slippage_bps is not None:
             payload["slippagePct"] = str(request.slippage_bps / Decimal("10000"))
+        if request.pos_side is not None:
+            payload["posSide"] = request.pos_side
         row = self._check_trade_ws_response(await self._trade_ws_request("order", [payload]))
         self._known_order_ids.add(row["ordId"])
         return OrderAck(row["ordId"], row.get("clOrdId", request.cl_ord_id), "live")
@@ -277,6 +279,8 @@ class OkxV5Client:
             payload["reduceOnly"] = "true"
         if request.slippage_bps is not None:
             payload["slippagePct"] = str(request.slippage_bps / Decimal("10000"))
+        if request.pos_side is not None:
+            payload["posSide"] = request.pos_side
         try:
             result = await self._request("POST", "/api/v5/trade/order", payload)
         except OkxHttpError as exc:

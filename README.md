@@ -75,6 +75,10 @@ bash scripts/run_demo.sh --request-id DEMO-001
 
 执行效率报告会额外记录 `Amend ACK P95 ms`、Maker 报价年龄、改单次数和 IOC 成交率。首次切换到 WS 后建议先运行 Demo Trading，并确认最终效率报告中的改单延迟和无异常敞口。
 
+## 系统化建设方案
+
+从当前单进程执行器演进到多账户、多策略、Account OMS 的详细方案见 [SYSTEM_BUILD_PLAN.md](docs/SYSTEM_BUILD_PLAN.md)。
+
 ## Basis strategy mode
 
 后续分层架构、Basis 状态机、OMS 事件契约和迁移计划见 [BASIS_ARB_FRAMEWORK.md](docs/BASIS_ARB_FRAMEWORK.md)。

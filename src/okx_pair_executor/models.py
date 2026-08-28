@@ -56,6 +56,7 @@ class ParentOrderRequest:
     target_base_qty: Decimal
     child_base_qty: Decimal
     action: OrderAction = OrderAction.OPEN
+    position_mode: str = "net"
     spot_td_mode: str = "cross"
     max_spot_slippage_bps: Decimal = Decimal("10")
     max_unhedged_base_qty: Decimal = Decimal("0.01")
@@ -143,6 +144,7 @@ class OrderRequest:
     reduce_only: bool = False
     slippage_bps: Decimal | None = None
     td_mode: str = "cross"
+    pos_side: str | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,7 @@ def report_payload(
             "target_base_qty": str(parent.request.target_base_qty),
             "child_base_qty": str(parent.request.child_base_qty),
             "spot_td_mode": parent.request.spot_td_mode,
+            "position_mode": parent.request.position_mode,
             "max_maker_attempts": parent.request.max_maker_attempts,
             "max_unhedged_base_qty": str(parent.request.max_unhedged_base_qty),
             "maker_reprice_interval_ms": parent.request.maker_reprice_interval_ms,

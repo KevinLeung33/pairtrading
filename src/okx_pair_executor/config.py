@@ -32,6 +32,7 @@ class AppConfig:
     spot_td_mode: str
     direction: Direction
     action: OrderAction
+    position_mode: str
     target_base_qty: Decimal
     child_base_qty: Decimal
     max_spot_slippage_bps: Decimal
@@ -64,6 +65,7 @@ class AppConfig:
             spot_td_mode=os.getenv("SPOT_TD_MODE", "cross"),
             direction=Direction(os.getenv("ARB_DIRECTION", Direction.SHORT_SPOT_LONG_SWAP.value)),
             action=OrderAction(os.getenv("ARB_ACTION", OrderAction.OPEN.value)),
+            position_mode=os.getenv("OKX_POSITION_MODE", "net"),
             target_base_qty=Decimal(env("TARGET_BASE_QTY")),
             child_base_qty=Decimal(env("CHILD_BASE_QTY")),
             max_spot_slippage_bps=Decimal(os.getenv("MAX_SPOT_SLIPPAGE_BPS", "10")),
@@ -100,6 +102,7 @@ class AppConfig:
             request_id=request_id,
             direction=self.direction,
             action=self.action,
+            position_mode=self.position_mode,
             spot_td_mode=self.spot_td_mode,
             spot_inst_id=self.spot_inst_id,
             swap_inst_id=self.swap_inst_id,

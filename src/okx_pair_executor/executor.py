@@ -167,6 +167,13 @@ class PairExecutor:
             cl_ord_id=cl_ord_id,
             reduce_only=parent.request.action.value == "close",
             td_mode="cross",
+            # Direction identifies the swap position being opened/closed.
+            # A close of a long is still sell + posSide=long.
+            pos_side=(
+                "long"
+                if parent.request.direction is Direction.SHORT_SPOT_LONG_SWAP
+                else "short"
+            ) if parent.request.position_mode == "long_short" else None,
         )
         ack = await self.exchange.place_order(request)
         metrics = self._efficiency.get(parent.request.request_id)

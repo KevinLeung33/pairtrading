@@ -87,3 +87,36 @@ async def test_execution_details_includes_all_repriced_maker_orders():
     assert details["legs"]["perp"]["avg_price"] == "79000"
     assert details["legs"]["spot"]["avg_price"] == "79010"
     assert details["fill_data_available"] is True
+
+@pytest.mark.asyncio
+async def test_order_payload_includes_pos_side_for_ws_and_rest():
+    client = OkxV5Client("key", "secret", "passphrase", demo=True)
+    client._inst_id_codes["BTC-USDT-SWAP"] = 123456
+    ws_calls = []
+
+    async def fake_trade_ws_request(op, args):
+        ws_calls.append((op, args))
+        return {"code": "0", "data": [{"sCode": "0", "ordId": "order-2", "clOrdId": "dual-1"}]}
+
+    client._trade_ws_request = fake_trade_ws_request
+    request = OrderRequest(
+        inst_id="BTC-USDT-SWAP",
+        side="sell",
+        ord_type="post_only",
+        size=Decimal("10"),
+        price=Decimal("79000"),
+        cl_ord_id="dual-1",
+        pos_side="short",
+    )
+    await client._place_order_ws(request)
+    assert ws_calls[0][1][0]["posSide"] == "short"
+
+    rest_calls = []
+
+    async def fake_request(method, path, payload=None):
+        rest_calls.append((method, path, payload))
+        return {"code": "0", "data": [{"sCode": "0", "ordId": "order-3", "clOrdId": "dual-1"}]}
+
+    client._request = fake_request
+    await client._place_order_rest(request)
+    assert rest_calls[0][2]["posSide"] == "short"

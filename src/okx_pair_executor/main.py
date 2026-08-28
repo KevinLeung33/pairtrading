@@ -255,6 +255,7 @@ def main() -> None:
     parser.add_argument("--spot-td-mode", choices=["cash", "cross", "isolated"])
     parser.add_argument("--direction", choices=[item.value for item in Direction])
     parser.add_argument("--action", choices=[item.value for item in OrderAction])
+    parser.add_argument("--position-mode", choices=["net", "long_short"])
     parser.add_argument("--target-base-qty", type=Decimal)
     parser.add_argument("--child-base-qty", type=Decimal)
     parser.add_argument("--max-unhedged-base-qty", type=Decimal)
@@ -281,6 +282,8 @@ def main() -> None:
         overrides["direction"] = Direction(args.direction)
     if args.action is not None:
         overrides["action"] = OrderAction(args.action)
+    if args.position_mode is not None:
+        overrides["position_mode"] = args.position_mode
     if args.target_base_qty is not None:
         overrides["target_base_qty"] = args.target_base_qty
     if args.child_base_qty is not None:
@@ -313,6 +316,8 @@ def main() -> None:
         raise SystemExit("STRATEGY_MODE must be pair or basis")
     if config.spot_td_mode not in {"cash", "cross", "isolated"}:
         raise SystemExit("SPOT_TD_MODE must be cash, cross or isolated")
+    if config.position_mode not in {"net", "long_short"}:
+        raise SystemExit("OKX_POSITION_MODE must be net or long_short")
     if not config.demo and not args.allow_live:
         raise SystemExit("live trading blocked: set OKX_DEMO=0 and pass --allow-live explicitly")
     request_id = args.request_id or datetime.now(timezone.utc).strftime("ARB-%Y%m%d-%H%M%S")

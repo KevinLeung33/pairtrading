@@ -61,6 +61,7 @@ OKX_DEMO=1
 SPOT_INST_ID=BTC-USDT
 SWAP_INST_ID=BTC-USDT-SWAP
 SPOT_TD_MODE=cross
+OKX_POSITION_MODE=net  # net or long_short
 
 # Strategy request
 STRATEGY_MODE=basis
@@ -99,6 +100,8 @@ OKX_TRADE_WS=1
 ```
 
 参数作用：
+
+永续持仓模式通过 OKX_POSITION_MODE 指定：net 表示单向持仓，long_short 表示双向持仓。双向持仓时执行器会为永续订单发送对应的 posSide；现货订单不会发送 posSide。
 
 | 配置项 | 作用 |
 |---|---|
@@ -322,7 +325,8 @@ IOC 成交率正常
 
 例如此前报告手续费约 9.6 bp，而市场可执行 Basis 只有约 3.6 bp，这种行情即使执行链路正常，也不适合开仓。不要为了让程序“跑起来”把入场阈值降到明显低于综合交易成本。
 
-`SPOT_TD_MODE=cross` 只表示使用 OKX Cross Margin 交易模式，不会替你提高杠杆或自动增加借贷额度；保证金、借贷权限和最大杠杆需要在 OKX Demo 账户侧预先配置。
+`SPOT_TD_MODE=cross
+OKX_POSITION_MODE=net  # net or long_short` 只表示使用 OKX Cross Margin 交易模式，不会替你提高杠杆或自动增加借贷额度；保证金、借贷权限和最大杠杆需要在 OKX Demo 账户侧预先配置。
 
 ## 9. 安全停止和异常处理
 

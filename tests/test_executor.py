@@ -6,6 +6,7 @@ from okx_pair_executor.executor import PairExecutor
 from okx_pair_executor.persistence import JsonStateStore
 from okx_pair_executor.models import (
     ChildState,
+    OrderAction,
     Direction,
     FillEvent,
     InstrumentRules,
@@ -18,6 +19,7 @@ from okx_pair_executor.models import (
 class FakeExchange:
     def __init__(self):
         self.orders = {}
+        self.requests = []
         self.next_id = 1
         self.maker_bid = Decimal("65000")
         self.maker_ask = Decimal("65000")
@@ -37,6 +39,7 @@ class FakeExchange:
         return Decimal("65000")
 
     async def place_order(self, request: OrderRequest):
+        self.requests.append(request)
         ord_id = str(self.next_id)
         self.next_id += 1
         self.orders[ord_id] = FillEvent(ord_id, request.cl_ord_id, request.inst_id, "live", Decimal("0"))
@@ -268,6 +271,7 @@ class RejectSecondMakerExchange(FakeExchange):
         self.maker_submissions = 0
 
     async def place_order(self, request: OrderRequest):
+        self.requests.append(request)
         if request.ord_type == "post_only":
             self.maker_submissions += 1
             if self.maker_submissions == 2:
@@ -325,3 +329,46 @@ async def test_restored_running_parent_without_active_order_enters_recovery():
     assert parent.state.value == "recovery"
     assert "manual exchange reconciliation required" in (parent.error or "")
     assert [reason for reason, _ in notifier.reports].count("EXECUTION_RISK") == 1
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("direction", "action", "expected_pos_side"),
+    [
+        (Direction.SHORT_SPOT_LONG_SWAP, OrderAction.OPEN, "long"),
+        (Direction.SHORT_SPOT_LONG_SWAP, OrderAction.CLOSE, "long"),
+        (Direction.LONG_SPOT_SHORT_SWAP, OrderAction.OPEN, "short"),
+        (Direction.LONG_SPOT_SHORT_SWAP, OrderAction.CLOSE, "short"),
+    ],
+)
+async def test_dual_position_mode_sets_swap_pos_side(direction, action, expected_pos_side):
+    exchange = FakeExchange()
+    executor = PairExecutor(exchange)
+    await executor.submit(ParentOrderRequest(
+        request_id=f"DUAL-{direction.value}-{action.value}",
+        direction=direction,
+        action=action,
+        position_mode="long_short",
+        spot_inst_id="BTC-USDT",
+        swap_inst_id="BTC-USDT-SWAP",
+        target_base_qty=Decimal("0.1"),
+        child_base_qty=Decimal("0.1"),
+    ))
+
+    maker_request = exchange.requests[0]
+    assert maker_request.inst_id == "BTC-USDT-SWAP"
+    assert maker_request.pos_side == expected_pos_side
+
+
+@pytest.mark.asyncio
+async def test_net_position_mode_does_not_set_swap_pos_side():
+    exchange = FakeExchange()
+    executor = PairExecutor(exchange)
+    await executor.submit(ParentOrderRequest(
+        request_id="NET-POS-SIDE",
+        direction=Direction.LONG_SPOT_SHORT_SWAP,
+        spot_inst_id="BTC-USDT",
+        swap_inst_id="BTC-USDT-SWAP",
+        target_base_qty=Decimal("0.1"),
+        child_base_qty=Decimal("0.1"),
+    ))
+    assert exchange.requests[0].pos_side is None
